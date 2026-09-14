@@ -1,4 +1,4 @@
-Name: Android
+name: Android
 
 on:
   push:
