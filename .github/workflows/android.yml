@@ -1,4 +1,4 @@
-name: Android
+Name: Android
 
 on:
   push:
@@ -26,6 +26,8 @@ jobs:
           java-version: '17'
 
       - uses: android-actions/setup-android@v4
+        with:
+          packages: 'cmdline-tools;latest build-tools;34.0.0 platforms;android-34'
 
       - uses: gradle/actions/setup-gradle@v4
         with:
