@@ -200,40 +200,49 @@ fun OverlayRoot(
         }
     }
 
-    Box(
+        Box(
         Modifier
             .fillMaxSize()
             .pointerInput(fromRight) {
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    if (layers.isNotEmpty()) return@awaitEachGesture
+                detectDragGestures(
+                    onStart = { offset ->
+                        if (layers.isNotEmpty()) return@detectDragGestures
 
-                    if (!expanded) {
-                        expanded = true
-                        handle.expand()
-                    }
-                    pivotY = down.position.y
-                    baseOffset = if (level is Level.Sections) 0f else baseOffset
-                    finger = down.position
-                    active = true
-                    val (v0, m0) = selectionFor(itemsLive.value.size, pivotY, baseOffset, finger, fromRight, screenW, g)
-                    virtual = v0
-                    mode = m0
-
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                        if (!change.pressed) break
+                        if (!expanded) {
+                            expanded = true
+                            handle.expand()
+                        }
+                        pivotY = offset.y
+                        baseOffset = if (level is Level.Sections) 0f else baseOffset
+                        finger = offset
+                        active = true
+                        
+                        val (v0, m0) = selectionFor(itemsLive.value.size, pivotY, baseOffset, finger, fromRight, screenW, g)
+                        virtual = v0
+                        mode = m0
+                    },
+                    onDrag = { change, dragAmount ->
+                        if (layers.isNotEmpty() || !active) return@detectDragGestures
+                        change.consume()
+                        
                         finger = change.position
                         val (v, m) = selectionFor(itemsLive.value.size, pivotY, baseOffset, finger, fromRight, screenW, g)
                         virtual = v
                         mode = m
-                        change.consume()
+                    },
+                    onDragEnd = {
+                        if (active) onRelease()
+                    },
+                    onDragCancel = {
+                        if (active) {
+                            active = false
+                            close()
+                        }
                     }
-                    onRelease()
-                }
+                )
             }
     ) {
+
         if (!expanded) {
             EdgeHint(fromRight)
         } else {
