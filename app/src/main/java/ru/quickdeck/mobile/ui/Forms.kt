@@ -45,9 +45,9 @@ fun SiteForm(
     ) {
         Field("Краткое наименование", s.name, { s = s.copy(name = it) }, placeholder = "Цимлянская 17")
         Spacer(Modifier.height(T.md))
-        PickerRow("Заказчик", db.customer(s.customerId)?.name) {
+        PickerRow("Заказчик", db.customer(s.customerId)?.name, onClick = {
             onPick(PickRequest.Customer { p -> s = s.copy(customerId = p.id) })
-        }
+        })
         Spacer(Modifier.height(T.md))
         Field("Адрес", s.address, { s = s.copy(address = it) }, placeholder = "Луганск, ул. Цимлянская, 17")
         Spacer(Modifier.height(T.md))
@@ -96,20 +96,20 @@ fun ContractForm(
     ) {
         Field("Номер", c.number, { c = c.copy(number = it) }, placeholder = "14")
         Spacer(Modifier.height(T.md))
-        PickerRow("Объект", db.site(c.siteId)?.name) {
+        PickerRow("Объект", db.site(c.siteId)?.name, onClick = {
             onPick(PickRequest.SitePick { site ->
                 // заказчик подтягивается с объекта, если ещё не выбран
                 c = c.copy(siteId = site.id, customerId = c.customerId ?: site.customerId)
             })
-        }
+        })
         Spacer(Modifier.height(T.md))
-        PickerRow("Заказчик", db.customer(c.customerId)?.name) {
+        PickerRow("Заказчик", db.customer(c.customerId)?.name, onClick = {
             onPick(PickRequest.Customer { p -> c = c.copy(customerId = p.id) })
-        }
+        })
         Spacer(Modifier.height(T.md))
-        PickerRow("Исполнитель", db.contractor(c.contractorId)?.name) {
+        PickerRow("Исполнитель", db.contractor(c.contractorId)?.name, onClick = {
             onPick(PickRequest.Contractor { p -> c = c.copy(contractorId = p.id) })
-        }
+        })
         Spacer(Modifier.height(T.md))
         Field("Сумма, ₽", amountText, { amountText = it.filter { ch -> ch.isDigit() } }, placeholder = "1250000", numeric = true)
         if (amountText.isNotBlank()) {
