@@ -140,7 +140,6 @@ fun OverlayRoot(
         }
     }
 
-    // подсказка пальцу: короткий отклик на смену пункта и на появление плюса
     var lastIndex by remember { mutableIntStateOf(-1) }
     LaunchedEffect(virtual.roundToInt(), active) {
         val idx = virtual.roundToInt()
@@ -152,13 +151,12 @@ fun OverlayRoot(
     LaunchedEffect(mode) {
         createArmed = false
         if (mode == WheelMode.CREATE) {
-            delay(160) // «зафиксировать» — короткая задержка от случайного перелёта
+            delay(160)
             createArmed = true
             buzz(ctx, 18)
         }
     }
 
-    // у верхнего и нижнего края лист крутится сам
     LaunchedEffect(active) {
         while (active) {
             val top = finger.y < g.autoScrollZone
@@ -283,7 +281,6 @@ fun OverlayRoot(
             }
         }
 
-        // Стопка окон: каждое следующее накрывает предыдущее.
         layers.forEachIndexed { index, layer ->
             key(layer.key) {
                 val depth = layers.size - 1 - index
@@ -300,8 +297,6 @@ fun OverlayRoot(
         }
     }
 }
-
-// --- содержимое окон ----------------------------------------------------
 
 @Composable
 private fun LayerContent(
@@ -380,51 +375,6 @@ private fun PickList(
     onDone: () -> Unit,
     onCreate: (Layer) -> Unit
 ) {
-    val title: String
-    val rows: @Composable () -> Unit
-
-    when (request) {
-        is PickRequest.Customer -> {
-            title = "Заказчик"
-            rows = {
-                Column {
-                    db.customers.forEach { p ->
-                        PartyRow(p, p.inn.takeIf { it.isNotBlank() }?.let { "ИНН $it" }, Ic.customers) {
-                            request.onPick(p); onDone()
-                        }
-                        Spacer(Modifier.height(T.sm))
-                    }
-                }
-            }
-        }
-
-        is PickRequest.Contractor -> {
-            title = "Исполнитель"
-            rows = {
-                Column {
-                    db.contractors.forEach { p ->
-                        PartyRow(p, p.inn.takeIf { it.isNotBlank() }?.let { "ИНН $it" }, Ic.contractors) {
-                            request.onPick(p); onDone()
-                        }
-                        Spacer(Modifier.height(T.sm))
-                    }
-                }
-            }
-        }
-
-        is PickRequest.SitePick -> {
-            title = "Объект"
-            rows = {
-                Column {
-                    db.sites.forEach { s ->
-                        SiteRow(s, db) { request.onPick(s); onDone() }
-                        Spacer(Modifier.height(T.sm))
-                    }
-                }
-            }
-        }
-    }
-
     val empty = when (request) {
         is PickRequest.Customer -> db.customers.isEmpty()
         is PickRequest.Contractor -> db.contractors.isEmpty()
@@ -432,8 +382,14 @@ private fun PickList(
     }
 
     Column(Modifier.fillMaxWidth().padding(T.lg)) {
+        val title = when (request) {
+            is PickRequest.Customer -> "Заказчик"
+            is PickRequest.Contractor -> "Исполнитель"
+            is PickRequest.SitePick -> "Объект"
+        }
         Q(title, Type.title, T.text)
         Spacer(Modifier.height(T.lg))
+        
         if (empty) {
             EmptyState(
                 text = "Здесь пока пусто",
@@ -448,7 +404,32 @@ private fun PickList(
                 }
             )
         } else {
-            rows()
+            Column {
+                when (request) {
+                    is PickRequest.Customer -> {
+                        db.customers.forEach { p ->
+                            PartyRow(p, p.inn.takeIf { it.isNotBlank() }?.let { "ИНН $it" }, Ic.customers) {
+                                request.onPick(p); onDone()
+                            }
+                            Spacer(Modifier.height(T.sm))
+                        }
+                    }
+                    is PickRequest.Contractor -> {
+                        db.contractors.forEach { p ->
+                            PartyRow(p, p.inn.takeIf { it.isNotBlank() }?.let { "ИНН $it" }, Ic.contractors) {
+                                request.onPick(p); onDone()
+                            }
+                            Spacer(Modifier.height(T.sm))
+                        }
+                    }
+                    is PickRequest.SitePick -> {
+                        db.sites.forEach { s ->
+                            SiteRow(s, db) { request.onPick(s); onDone() }
+                            Spacer(Modifier.height(T.sm))
+                        }
+                    }
+                }
+            }
             Spacer(Modifier.height(T.lg))
             GhostButton("Отмена", onDone, Modifier.fillMaxWidth())
         }
@@ -466,3 +447,128 @@ fun EmptyState(text: String, hint: String, action: String, onAction: () -> Unit)
         Q(text, Type.heading, T.text2)
         Spacer(Modifier.height(T.xs))
         Q(hint, Type.small, T.text3)
+        Spacer(Modifier.height(T.lg))
+        PrimaryButton(action, onAction)
+    }
+}
+
+@Composable
+private fun LayerSheet(depth: Int, content: @Composable () -> Unit) {
+    val maxH = LocalConfiguration.current.screenHeightDp.dp - 56.dp
+    val state = remember { MutableTransitionState(false).apply { targetState = true } }
+
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+        AnimatedVisibility(
+            visibleState = state,
+            enter = slideInVertically(tween(T.MS_SCREEN, easing = T.curve)) { it } +
+                fadeIn(tween(T.MS_STATE, easing = T.curve)),
+            exit = slideOutVertically(tween(T.MS_EXIT, easing = T.curve)) { it } +
+                fadeOut(tween(T.MS_EXIT, easing = T.curve))
+        ) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = maxH)
+                    .scale(1f - 0.02f * depth)
+                    .clip(RoundedCornerShape(topStart = T.rSheet, topEnd = T.rSheet))
+                    .background(T.surface)
+                    .padding(bottom = 28.dp)
+            ) {
+                Box(Modifier.fillMaxWidth().padding(top = T.md), contentAlignment = Alignment.Center) {
+                    Box(
+                        Modifier
+                            .width(36.dp)
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(T.hairline)
+                    )
+                }
+                content()
+            }
+        }
+    }
+}
+
+@Composable
+private fun EdgeHint(fromRight: Boolean) {
+    Box(Modifier.fillMaxSize(), contentAlignment = if (fromRight) Alignment.CenterEnd else Alignment.CenterStart) {
+        Box(
+            Modifier
+                .padding(horizontal = 3.dp)
+                .width(4.dp)
+                .height(96.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(T.text.copy(alpha = 0.22f))
+        )
+    }
+}
+
+@Composable
+private fun BottomHint(text: String, onClose: () -> Unit) {
+    Column(
+        Modifier.fillMaxSize().padding(bottom = 36.dp, start = T.lg, end = T.lg),
+        verticalArrangement = Arrangement.Bottom,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Q(text, Type.caption, Color.White.copy(alpha = 0.6f))
+        Spacer(Modifier.height(T.md))
+        Pressable(onClose) {
+            Box(
+                Modifier
+                    .size(T.touchMin)
+                    .clip(RoundedCornerShape(percent = 50))
+                    .background(Color.White.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center
+            ) { QIcon(Ic.close, size = 22.dp, tint = Color.White) }
+        }
+    }
+}
+
+private fun wheelItems(level: Level, db: Db): List<WheelItem> = when (level) {
+    is Level.Sections -> Section.entries.map { s ->
+        val count = when (s) {
+            Section.CUSTOMERS -> db.customers.size
+            Section.SITES -> db.sites.size
+            Section.CONTRACTS -> db.contracts.size
+            Section.CONTRACTORS -> db.contractors.size
+        }
+        WheelItem(
+            title = s.title,
+            subtitle = if (count == 0) "пусто" else "$count",
+            icon = sectionIcon(s),
+            tone = T.accent
+        )
+    }
+
+    is Level.Items -> when (level.section) {
+        Section.CUSTOMERS -> db.customers.map { WheelItem(it.name, it.phone.ifBlank { null }, Ic.customers, T.muted) }
+        Section.CONTRACTORS -> db.contractors.map { WheelItem(it.name, it.phone.ifBlank { null }, Ic.contractors, T.muted) }
+        Section.SITES -> db.sites.map {
+            WheelItem(it.name, db.customer(it.customerId)?.name, Ic.sites, T.accent)
+        }
+        Section.CONTRACTS -> db.contracts.map {
+            WheelItem("№ ${it.number}", db.site(it.siteId)?.name, Ic.contracts, T.accent)
+        }
+    }.ifEmpty { listOf(WheelItem("Пока пусто", "вытяни дальше, чтобы добавить", Ic.layers, T.muted)) }
+}
+
+private fun sectionIcon(s: Section): String = when (s) {
+    Section.CUSTOMERS -> Ic.customers
+    Section.SITES -> Ic.sites
+    Section.CONTRACTS -> Ic.contracts
+    Section.CONTRACTORS -> Ic.contractors
+}
+
+private fun openCard(section: Section, index: Int, db: Db): Layer? = when (section) {
+    Section.CUSTOMERS -> db.customers.getOrNull(index)?.let { Layer.CardParty(it.id, true) }
+    Section.CONTRACTORS -> db.contractors.getOrNull(index)?.let { Layer.CardParty(it.id, false) }
+    Section.SITES -> db.sites.getOrNull(index)?.let { Layer.CardSite(it.id) }
+    Section.CONTRACTS -> db.contracts.getOrNull(index)?.let { Layer.CardContract(it.id) }
+}
+
+private fun newForm(section: Section): Layer = when (section) {
+    Section.CUSTOMERS -> Layer.FormParty(Party(), true)
+    Section.CONTRACTORS -> Layer.FormParty(Party(), false)
+    Section.SITES -> Layer.FormSite(Site())
+    Section.CONTRACTS -> Layer.FormContract(Contract(status = Status.DRAFT))
+}
