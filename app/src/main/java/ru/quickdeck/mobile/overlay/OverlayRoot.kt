@@ -31,6 +31,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
+
 import ru.quickdeck.mobile.core.*
 import ru.quickdeck.mobile.data.*
 import ru.quickdeck.mobile.ui.*
@@ -202,7 +203,7 @@ fun OverlayRoot(
             .fillMaxSize()
             .pointerInput(fromRight) {
                 detectDragGestures(
-                    onStart = { offset ->
+                    onDragStart = { offset ->
                         if (layers.isNotEmpty()) return@detectDragGestures
 
                         if (!expanded) {
@@ -571,4 +572,15 @@ private fun newForm(section: Section): Layer = when (section) {
     Section.CONTRACTORS -> Layer.FormParty(Party(), false)
     Section.SITES -> Layer.FormSite(Site())
     Section.CONTRACTS -> Layer.FormContract(Contract(status = Status.DRAFT))
+}
+
+@Suppress("DEPRECATION")
+private fun buzz(ctx: Context, ms: Long) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        val vm = ctx.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+        vm.defaultVibrator.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE))
+    } else {
+        val v = ctx.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+        v.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE))
+    }
 }
