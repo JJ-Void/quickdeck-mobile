@@ -1,5 +1,6 @@
 package ru.quickdeck.mobile.overlay
 
+import androidx.compose.foundation.gestures.detectDragGestures
 import android.content.Context
 import android.os.Build
 import android.os.VibrationEffect
