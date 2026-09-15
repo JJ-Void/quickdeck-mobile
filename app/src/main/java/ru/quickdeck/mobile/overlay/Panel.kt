@@ -28,7 +28,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import ru.quickdeck.mobile.core.Ic
 import ru.quickdeck.mobile.core.Q
@@ -94,10 +93,6 @@ fun PanelRoot(host: OverlayHost) {
 
 @Composable
 private fun WheelLayer(db: Db) {
-    val density = LocalDensity.current.density
-    val g = remember(density) { WheelGeometry(density) }
-    val screenH = LocalConfiguration.current.screenHeightDp * density
-
     val items = remember(db) {
         Section.entries.map { s ->
             val count = db.count(s)
@@ -110,16 +105,14 @@ private fun WheelLayer(db: Db) {
         }
     }
 
-    // Колесо не прижимается к краям: четыре карточки по 64 dp должны влезть
-    // целиком, где бы ни висел пузырь.
-    val pivot = OverlayState.pivotY.coerceIn(g.safe, (screenH - g.safe).coerceAtLeast(g.safe))
-
+    // Стопка уже поставлена службой так, чтобы целиком влезть в экран,
+    // где бы ни висел пузырь. Здесь её только рисуем.
     Wheel(
         items = items,
         virtual = OverlayState.virtual,
         mode = OverlayState.wheelMode,
         createArmed = OverlayState.createArmed,
-        pivotY = pivot,
+        anchorTop = OverlayState.anchorTop,
         originX = OverlayState.originX,
         fromRight = OverlayState.fromRight
     )

@@ -36,11 +36,11 @@ data class WheelItem(
 )
 
 /**
- * Геометрия в пикселях, всё от точки касания пузыря.
- * Шаг сетки 4 сохраняется: 64 = 16 × 4, 56 = 14 × 4, 192 = 48 × 4.
+ * Геометрия колеса в пикселях. Шаг сетки 4 сохраняется:
+ * 64 = 16 × 4, 56 = 14 × 4, 192 = 48 × 4.
  */
 class WheelGeometry(densityPx: Float) {
-    /** Один пункт на 64 dp хода пальца по вертикали. */
+    /** Расстояние между пунктами по вертикали. */
     val pitch = 64f * densityPx
 
     /** Палец почти не ушёл от пузыря — это отмена. */
@@ -52,31 +52,51 @@ class WheelGeometry(densityPx: Float) {
     /** Просвет между пузырём и карточками. */
     val gap = 16f * densityPx
 
-    /** Колесо не прижимается к верхнему и нижнему краю. */
-    val safe = 168f * densityPx
-
     val cardWidth = 240f * densityPx
+    val cardHeight = 56f * densityPx
+
+    /** Сколько нельзя занимать сверху и снизу: статусная строка и навигация. */
+    val safeTop = 96f * densityPx
+    val safeBottom = 120f * densityPx
+
+    fun stackHeight(count: Int) = (count - 1) * pitch + cardHeight
+
+    /**
+     * Верх первой карточки.
+     *
+     * Колесо хочет начаться там, где палец лёг на пузырь, чтобы первый пункт
+     * оказался прямо под ним. Но если пузырь висит у края, стопка из четырёх
+     * карточек туда не влезет — тогда она сдвигается внутрь экрана целиком.
+     * Раньше этого не было, и нижние пункты просто уезжали за край.
+     */
+    fun anchorFor(originY: Float, screenHeight: Float, count: Int): Float {
+        val stack = stackHeight(count)
+        val lowest = screenHeight - safeBottom - stack
+        val wanted = originY - cardHeight / 2f
+        return if (lowest <= safeTop) safeTop else wanted.coerceIn(safeTop, lowest)
+    }
 }
 
 /**
  * Чистая функция: где палец — такой и выбор.
  *
- * По вертикали — какой пункт, считается от точки, где палец лёг на пузырь.
- * По горизонтали — насколько человек вытянул: чуть-чуть значит передумал,
- * нормально — открыть, далеко — добавить новую запись.
+ * По вертикали палец показывает прямо на карточку: стопка стоит на месте,
+ * двигается только выделение. По горизонтали — насколько человек вытянул:
+ * чуть-чуть значит передумал, нормально — открыть, далеко — новая запись.
  */
 fun selectionFor(
     itemCount: Int,
-    origin: Offset,
+    anchorTop: Float,
+    originX: Float,
     finger: Offset,
     g: WheelGeometry
 ): Pair<Float, WheelMode> {
     if (itemCount == 0) return 0f to WheelMode.CANCEL
 
-    val virtual = ((finger.y - origin.y) / g.pitch)
+    val virtual = ((finger.y - anchorTop - g.cardHeight / 2f) / g.pitch)
         .coerceIn(0f, (itemCount - 1).toFloat())
 
-    val pull = abs(finger.x - origin.x)
+    val pull = abs(finger.x - originX)
     val mode = when {
         pull < g.cancelPull -> WheelMode.CANCEL
         pull < g.createPull -> WheelMode.BROWSE
@@ -85,14 +105,14 @@ fun selectionFor(
     return virtual to mode
 }
 
-/** Колесо стоит на месте, а выбор едет по нему — так предсказуемее, чем наоборот. */
+/** Стопка стоит неподвижно, по ней едет выделение — так предсказуемее. */
 @Composable
 fun Wheel(
     items: List<WheelItem>,
     virtual: Float,
     mode: WheelMode,
     createArmed: Boolean,
-    pivotY: Float,
+    anchorTop: Float,
     originX: Float,
     fromRight: Boolean,
     modifier: Modifier = Modifier
@@ -103,16 +123,12 @@ fun Wheel(
 
     Box(modifier.fillMaxSize()) {
         items.forEachIndexed { index, item ->
-            val rel = index - virtual
-            val dy = rel * g.pitch
-
             val isSelected = index == selected
-            val near = abs(rel)
-            val fade = (1f - 0.26f * near).coerceIn(0.22f, 1f)
-            val shrink = (1f - 0.06f * near).coerceIn(0.8f, 1f)
+            val away = abs(index - selected)
+            val fade = if (isSelected) 1f else (1f - 0.18f * away).coerceIn(0.42f, 1f)
 
             val xPx = if (fromRight) originX - g.gap - g.cardWidth else originX + g.gap
-            val yPx = pivotY + dy - 28f * density
+            val yPx = anchorTop + index * g.pitch
 
             WheelCard(
                 item = item,
@@ -120,10 +136,10 @@ fun Wheel(
                 creating = isSelected && mode == WheelMode.CREATE,
                 armed = createArmed,
                 widthPx = g.cardWidth,
+                heightPx = g.cardHeight,
                 modifier = Modifier
                     .offset { IntOffset(xPx.roundToInt(), yPx.roundToInt()) }
                     .alpha(fade)
-                    .scale(shrink)
             )
         }
     }
@@ -136,10 +152,12 @@ private fun WheelCard(
     creating: Boolean,
     armed: Boolean,
     widthPx: Float,
+    heightPx: Float,
     modifier: Modifier = Modifier
 ) {
     val density = LocalDensity.current
     val width = with(density) { widthPx.toDp() }
+    val height = with(density) { heightPx.toDp() }
 
     val lift by animateFloatAsState(
         targetValue = if (selected) 1f else 0f,
@@ -163,18 +181,20 @@ private fun WheelCard(
     Row(
         modifier
             .width(width)
-            .heightIn(min = 56.dp)
-            .scale(1f + 0.03f * lift + 0.02f * grow)
+            .height(height)
+            .scale(1f + 0.04f * lift + 0.02f * grow)
             .clip(RoundedCornerShape(T.rCard))
             .background(fill)
             .border(
                 width = if (selected) 1.5.dp else 1.dp,
-                color = if (creating) Color.White.copy(alpha = 0.34f)
-                else if (selected) T.accent.fill.copy(alpha = 0.22f + 0.6f * lift)
-                else T.hairlineDark,
+                color = when {
+                    creating -> Color.White.copy(alpha = 0.34f)
+                    selected -> T.accent.fill.copy(alpha = 0.22f + 0.6f * lift)
+                    else -> T.hairlineDark
+                },
                 shape = RoundedCornerShape(T.rCard)
             )
-            .padding(horizontal = T.md, vertical = T.sm),
+            .padding(horizontal = T.md),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
@@ -182,16 +202,22 @@ private fun WheelCard(
                 .size(36.dp)
                 .clip(RoundedCornerShape(T.rIcon))
                 .background(
-                    if (creating) Color.White.copy(alpha = 0.2f)
-                    else if (selected) T.accent.fill.copy(alpha = 0.18f)
-                    else Color.White.copy(alpha = 0.06f)
+                    when {
+                        creating -> Color.White.copy(alpha = 0.2f)
+                        selected -> T.accent.fill.copy(alpha = 0.18f)
+                        else -> Color.White.copy(alpha = 0.06f)
+                    }
                 ),
             contentAlignment = Alignment.Center
         ) {
             QIcon(
                 if (creating) Ic.plus else item.icon,
                 size = 20.dp,
-                tint = if (creating) Color.White else if (selected) T.accent.fill else T.text2OnDark,
+                tint = when {
+                    creating -> Color.White
+                    selected -> T.accent.fill
+                    else -> T.text2OnDark
+                },
                 stroke = if (selected || creating) 2f else 1.75f
             )
         }

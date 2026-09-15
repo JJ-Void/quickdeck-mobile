@@ -38,15 +38,10 @@ enum class WheelMode {
     CREATE
 }
 
-/**
- * То, что панель умеет попросить у службы. Сама себя панель не двигает.
- */
+/** То, что панель умеет попросить у службы. Сама себя панель не двигает. */
 interface OverlayHost {
     /** Пропускать касания сквозь панель или ловить их. */
     fun panelTouchable(value: Boolean)
-
-    /** Сдвинуть пузырь на столько пикселей. */
-    fun moveBubble(dx: Float, dy: Float)
 
     /** Притянуть пузырь к ближайшему краю и запомнить место. */
     fun snapBubble()
@@ -68,8 +63,7 @@ interface OverlayHost {
  *
  * Оба окна рисуют свой Compose, но читают отсюда. Поэтому жест, который
  * целиком живёт в окне пузыря, двигает картинку в окне панели — и ни одно
- * окно во время жеста не пересоздаётся. Ровно из-за пересоздания окна
- * прошлая версия теряла палец на первом же движении.
+ * окно во время жеста не пересоздаётся.
  */
 object OverlayState {
 
@@ -96,11 +90,8 @@ object OverlayState {
 
     var createArmed by mutableStateOf(false)
 
-    var finger by mutableStateOf(Offset.Zero)
-        private set
-
-    /** Точка, где палец лёг на пузырь: от неё считается и выбор, и вытягивание. */
-    var pivotY by mutableFloatStateOf(0f)
+    /** Верх первой карточки стопки. Считается один раз при старте жеста. */
+    var anchorTop by mutableFloatStateOf(0f)
         private set
 
     var originX by mutableFloatStateOf(0f)
@@ -114,7 +105,6 @@ object OverlayState {
 
     var bubbleLeft by mutableFloatStateOf(0f)
     var bubbleTop by mutableFloatStateOf(0f)
-    var bubbleSize by mutableFloatStateOf(0f)
 
     /** Пузырь оторван и едет за пальцем. */
     var moving by mutableStateOf(false)
@@ -127,11 +117,11 @@ object OverlayState {
 
     // --- переходы -------------------------------------------------------
 
-    fun beginWheel(origin: Offset, screenWidth: Float) {
+    fun beginWheel(origin: Offset, screenWidth: Float, screenHeight: Float, density: Float) {
+        val g = WheelGeometry(density)
         fromRight = origin.x > screenWidth / 2f
         originX = origin.x
-        pivotY = origin.y
-        finger = origin
+        anchorTop = g.anchorFor(origin.y, screenHeight, SECTION_COUNT)
         virtual = 0f
         wheelMode = WheelMode.CANCEL
         createArmed = false
@@ -139,8 +129,7 @@ object OverlayState {
         mode = PanelMode.WHEEL
     }
 
-    fun dragTo(point: Offset, virtualValue: Float, newMode: WheelMode) {
-        finger = point
+    fun dragTo(virtualValue: Float, newMode: WheelMode) {
         virtual = virtualValue
         wheelMode = newMode
     }
@@ -148,8 +137,7 @@ object OverlayState {
     /** Палец отпущен. */
     fun releaseWheel() {
         val last = Section.entries.size - 1
-        val index = virtual.roundToInt().coerceIn(0, last)
-        val target = Section.entries[index]
+        val target = Section.entries[virtual.roundToInt().coerceIn(0, last)]
         when (wheelMode) {
             WheelMode.CANCEL -> close()
             WheelMode.BROWSE -> openBrowse(target)
@@ -193,4 +181,6 @@ object OverlayState {
     }
 
     val isOpen: Boolean get() = mode != PanelMode.HIDDEN
+
+    const val SECTION_COUNT = 4
 }

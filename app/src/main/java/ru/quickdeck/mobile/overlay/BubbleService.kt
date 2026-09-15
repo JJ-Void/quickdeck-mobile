@@ -13,14 +13,20 @@ import android.content.res.Configuration
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.provider.Settings
 import android.view.Gravity
+import android.view.MotionEvent
+import android.view.View
+import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.widget.FrameLayout
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.ComposeView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
@@ -45,22 +51,23 @@ import ru.quickdeck.mobile.SheetActivity
 import ru.quickdeck.mobile.data.Section
 import ru.quickdeck.mobile.data.Store
 import ru.quickdeck.mobile.data.Sync
+import kotlin.math.hypot
 import kotlin.math.roundToInt
+
+/** Чем оказался жест, начавшийся на пузыре. */
+private enum class Gesture { PENDING, MOVE, WHEEL }
 
 /**
  * Два окна поверх всего остального.
  *
- * Маленькое — пузырь. Оно ловит весь жест и за время жеста никогда не меняет
- * размер: именно пересоздание окна в прошлой версии рвало поток касаний и
- * палец переставал листать.
+ * Маленькое — пузырь. Оно ловит весь жест и за время жеста не меняет размер:
+ * пересоздание окна отменяет поток касаний, и палец срывается.
  *
- * Большое — панель. Оно добавляется один раз при запуске и по умолчанию
- * вообще не принимает касания: пока идёт ведение по колесу, это чистая
- * картинка. Касания оно берёт только когда открыт список или карточка.
+ * Большое — панель. Добавляется один раз при запуске и по умолчанию не
+ * принимает касания: пока идёт ведение по колесу, это чистая картинка.
  *
- * Ни одно из двух окон не бывает фокусируемым. Значит, оно не может перехватить
- * клавиатуру и системные клавиши, и не может залипнуть: пузырь всегда лежит
- * сверху панели и по тапу закрывает её.
+ * Ни одно из окон не бывает фокусируемым, поэтому перехватить весь экран и
+ * залипнуть они не могут. Пузырь всегда лежит поверх панели и закрывает её тапом.
  */
 class BubbleService : Service(), OverlayHost {
 
@@ -91,7 +98,8 @@ class BubbleService : Service(), OverlayHost {
     private var bubbleParams: WindowManager.LayoutParams? = null
     private var snapper: ValueAnimator? = null
 
-    private val bubblePx get() = (BUBBLE_DP * resources.displayMetrics.density).toInt()
+    private val density get() = resources.displayMetrics.density
+    private val bubblePx get() = (BUBBLE_DP * density).toInt()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -110,8 +118,7 @@ class BubbleService : Service(), OverlayHost {
             stopSelf()
             return
         }
-        // Служба могла быть перезапущена системой — состояние от прошлой
-        // жизни сбрасываем, иначе панель воскреснет открытой без окна.
+        // Службу могла перезапустить система — состояние от прошлой жизни сбрасываем.
         OverlayState.close()
         OverlayState.host = this
         attach()
@@ -167,8 +174,15 @@ class BubbleService : Service(), OverlayHost {
         this.y = y
     }
 
-    private fun compose(content: @androidx.compose.runtime.Composable () -> Unit): FrameLayout {
-        val host = FrameLayout(this)
+    /** Ловит касания раньше Compose: жесту нужны координаты экрана, а не окна. */
+    private inner class TouchBox(ctx: Context) : FrameLayout(ctx) {
+        override fun onInterceptTouchEvent(ev: MotionEvent): Boolean = true
+    }
+
+    private fun compose(
+        host: FrameLayout,
+        content: @androidx.compose.runtime.Composable () -> Unit
+    ): FrameLayout {
         val view = ComposeView(this).apply {
             setViewTreeLifecycleOwner(owners)
             setViewTreeViewModelStoreOwner(owners)
@@ -195,7 +209,7 @@ class BubbleService : Service(), OverlayHost {
 
         // Панель — первой, чтобы пузырь лёг поверх неё и всегда оставался
         // доступным. Порядок добавления и есть порядок наложения.
-        val panel = compose { PanelRoot(this) }
+        val panel = compose(FrameLayout(this)) { PanelRoot(this) }
         val pParams = panelLayout(touchable = false)
         panelHost = panel
         panelParams = pParams
@@ -206,13 +220,13 @@ class BubbleService : Service(), OverlayHost {
         val x = if (savedX >= 0) savedX else bounds.width() - size
         val y = if (savedY >= 0) savedY else (bounds.height() * 0.42f).toInt()
 
-        val bubble = compose { BubbleRoot(this, bounds.width().toFloat()) }
+        val bubble = compose(TouchBox(this)) { BubbleRoot() }
+        bubble.setOnTouchListener(BubbleTouch())
         val bParams = bubbleLayout(clampX(x, bounds, size), clampY(y, bounds, size))
         bubbleHost = bubble
         bubbleParams = bParams
         runCatching { wm.addView(bubble, bParams) }.onFailure { stopSelf(); return }
 
-        OverlayState.bubbleSize = size.toFloat()
         publishBubblePosition()
         excludeFromSystemGestures()
 
@@ -222,11 +236,23 @@ class BubbleService : Service(), OverlayHost {
     private fun clampX(value: Int, bounds: Rect, size: Int) =
         value.coerceIn(0, (bounds.width() - size).coerceAtLeast(0))
 
-    private fun clampY(value: Int, bounds: Rect, size: Int) =
-        value.coerceIn(
-            (24 * resources.displayMetrics.density).toInt(),
-            (bounds.height() - size - 48 * resources.displayMetrics.density).toInt().coerceAtLeast(0)
-        )
+    private fun clampY(value: Int, bounds: Rect, size: Int): Int {
+        val top = (24 * density).toInt()
+        val bottom = (bounds.height() - size - 48 * density).toInt()
+        return if (bottom <= top) top else value.coerceIn(top, bottom)
+    }
+
+    /** Абсолютная установка позиции: никаких накоплений, никакого разгона. */
+    private fun placeBubble(x: Int, y: Int) {
+        val view = bubbleHost ?: return
+        val params = bubbleParams ?: return
+        val bounds = screen()
+        val size = bubblePx
+        params.x = clampX(x, bounds, size)
+        params.y = clampY(y, bounds, size)
+        runCatching { wm.updateViewLayout(view, params) }
+        publishBubblePosition()
+    }
 
     private fun publishBubblePosition() {
         val p = bubbleParams ?: return
@@ -236,15 +262,126 @@ class BubbleService : Service(), OverlayHost {
 
     /**
      * Система резервирует полосы у краёв под свои жесты. Пузырь у самого края
-     * без этого просто не получал бы касание — вместо него срабатывал «назад».
+     * без этого не получал бы касание — вместо него срабатывал бы «назад».
      */
     private fun excludeFromSystemGestures() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
         val view = bubbleHost ?: return
         view.post {
             val size = bubblePx
-            runCatching {
-                view.systemGestureExclusionRects = listOf(Rect(0, 0, size, size))
+            runCatching { view.systemGestureExclusionRects = listOf(Rect(0, 0, size, size)) }
+        }
+    }
+
+    // --- жест -------------------------------------------------------------
+
+    /**
+     * Три жеста: тап открывает список, протяжка даёт колесо разделов,
+     * долгое нажатие отрывает пузырь.
+     *
+     * Всё считается по rawX/rawY — это координаты экрана. Внутренние координаты
+     * окна тут не годятся: при перетаскивании окно само едет за пальцем и
+     * отстаёт на кадр, поэтому один и тот же сдвиг применялся дважды.
+     */
+    private inner class BubbleTouch : View.OnTouchListener {
+
+        private var gesture = Gesture.PENDING
+        private var downX = 0f
+        private var downY = 0f
+        private var startWinX = 0
+        private var startWinY = 0
+        private var screenW = 0f
+        private var screenH = 0f
+        private var lastIndex = -1
+        private var lastMode = WheelMode.CANCEL
+
+        private val handler = Handler(Looper.getMainLooper())
+        private val hold = Runnable {
+            if (gesture == Gesture.PENDING) {
+                gesture = Gesture.MOVE
+                OverlayState.moving = true
+                buzz(20)
+            }
+        }
+
+        override fun onTouch(v: View, e: MotionEvent): Boolean {
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    val bounds = screen()
+                    screenW = bounds.width().toFloat()
+                    screenH = bounds.height().toFloat()
+                    downX = e.rawX
+                    downY = e.rawY
+                    startWinX = bubbleParams?.x ?: 0
+                    startWinY = bubbleParams?.y ?: 0
+                    gesture = Gesture.PENDING
+                    lastIndex = -1
+                    lastMode = WheelMode.CANCEL
+                    handler.postDelayed(hold, ViewConfiguration.getLongPressTimeout().toLong())
+                }
+
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = e.rawX - downX
+                    val dy = e.rawY - downY
+
+                    if (gesture == Gesture.PENDING &&
+                        hypot(dx, dy) > ViewConfiguration.get(this@BubbleService).scaledTouchSlop
+                    ) {
+                        handler.removeCallbacks(hold)
+                        gesture = Gesture.WHEEL
+                        OverlayState.beginWheel(Offset(downX, downY), screenW, screenH, density)
+                        buzz(8)
+                    }
+
+                    when (gesture) {
+                        Gesture.WHEEL -> steer(e.rawX, e.rawY)
+                        Gesture.MOVE -> placeBubble(startWinX + dx.roundToInt(), startWinY + dy.roundToInt())
+                        Gesture.PENDING -> Unit
+                    }
+                }
+
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    handler.removeCallbacks(hold)
+                    val released = e.actionMasked == MotionEvent.ACTION_UP
+                    when (gesture) {
+                        Gesture.PENDING -> if (released) {
+                            buzz(6)
+                            if (OverlayState.isOpen) OverlayState.close() else OverlayState.openLast()
+                        }
+
+                        Gesture.WHEEL -> if (released) OverlayState.releaseWheel() else OverlayState.close()
+
+                        Gesture.MOVE -> {
+                            OverlayState.moving = false
+                            snapBubble()
+                        }
+                    }
+                    gesture = Gesture.PENDING
+                }
+            }
+            return true
+        }
+
+        private fun steer(rawX: Float, rawY: Float) {
+            val g = WheelGeometry(density)
+            val (virtual, mode) = selectionFor(
+                itemCount = OverlayState.SECTION_COUNT,
+                anchorTop = OverlayState.anchorTop,
+                originX = OverlayState.originX,
+                finger = Offset(rawX, rawY),
+                g = g
+            )
+            OverlayState.dragTo(virtual, mode)
+
+            val index = virtual.roundToInt()
+            if (index != lastIndex && mode != WheelMode.CANCEL) {
+                lastIndex = index
+                buzz(8)
+            }
+            if (mode != lastMode) {
+                lastMode = mode
+                OverlayState.createArmed = mode == WheelMode.CREATE
+                if (mode == WheelMode.CREATE) buzz(18)
             }
         }
     }
@@ -262,17 +399,6 @@ class BubbleService : Service(), OverlayHost {
         if (wanted == params.flags) return
         params.flags = wanted
         runCatching { wm.updateViewLayout(view, params) }
-    }
-
-    override fun moveBubble(dx: Float, dy: Float) {
-        val view = bubbleHost ?: return
-        val params = bubbleParams ?: return
-        val bounds = screen()
-        val size = bubblePx
-        params.x = clampX(params.x + dx.roundToInt(), bounds, size)
-        params.y = clampY(params.y + dy.roundToInt(), bounds, size)
-        runCatching { wm.updateViewLayout(view, params) }
-        publishBubblePosition()
     }
 
     override fun snapBubble() {
@@ -335,14 +461,8 @@ class BubbleService : Service(), OverlayHost {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        val view = bubbleHost ?: return
         val params = bubbleParams ?: return
-        val bounds = screen()
-        val size = bubblePx
-        params.x = clampX(params.x, bounds, size)
-        params.y = clampY(params.y, bounds, size)
-        runCatching { wm.updateViewLayout(view, params) }
-        publishBubblePosition()
+        placeBubble(params.x, params.y)
     }
 
     override fun onDestroy() {

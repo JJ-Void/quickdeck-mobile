@@ -1,5 +1,6 @@
 package ru.quickdeck.mobile.overlay
 
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
@@ -8,15 +9,12 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -25,164 +23,30 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.input.pointer.AwaitPointerEventScope
-import androidx.compose.ui.input.pointer.PointerId
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.withTimeoutOrNull
 import ru.quickdeck.mobile.core.Ic
 import ru.quickdeck.mobile.core.Q
 import ru.quickdeck.mobile.core.QIcon
 import ru.quickdeck.mobile.core.T
 import ru.quickdeck.mobile.core.Type
 
-/** Чем кончилось первое движение пальца после касания пузыря. */
-private enum class First { DRAG, UP, GONE }
-
 /**
- * Пузырь и весь жест разом.
+ * Пузырь — только картинка.
  *
- * Здесь важна одна вещь: окно пузыря за время жеста не меняет размер.
- * Android отменяет поток касаний, когда окно пересоздают, — поэтому панель
- * вынесена в отдельное окно, а это остаётся неподвижным и маленьким.
- * Палец, легший на пузырь, продолжает слать события даже далеко за его
- * границами: система отдаёт весь жест тому окну, где случилось нажатие.
- *
- * Три жеста, каждый со своим смыслом:
- *   тап            — открыть список того раздела, где был в прошлый раз;
- *   потянул        — колесо разделов под пальцем, отпустил — выбрал;
- *   долгое нажатие — пузырь оторвался, тащи куда удобно.
+ * Весь жест обрабатывает служба обычным OnTouchListener, потому что ей нужны
+ * абсолютные экранные координаты (rawX/rawY). Compose отдаёт координаты внутри
+ * окна, а окно во время перетаскивания само едет за пальцем и отстаёт на кадр —
+ * из-за этого сдвиг считался дважды и пузырь разгонялся по экрану.
  */
 @Composable
-fun BubbleRoot(host: OverlayHost, screenWidthPx: Float) {
-    val density = LocalDensity.current.density
-    val g = remember(density) { WheelGeometry(density) }
-
-    Box(
-        Modifier
-            .fillMaxSize()
-            .pointerInput(Unit) {
-                val slop = viewConfiguration.touchSlop
-                val holdMs = viewConfiguration.longPressTimeoutMillis
-
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    down.consume()
-
-                    val startLocal = down.position
-                    val origin = Offset(
-                        OverlayState.bubbleLeft + startLocal.x,
-                        OverlayState.bubbleTop + startLocal.y
-                    )
-
-                    val first = withTimeoutOrNull(holdMs) {
-                        firstIntent(down.id, startLocal, slop)
-                    }
-
-                    when (first) {
-                        // Времени вышло, палец на месте — пузырь отрывается.
-                        null -> {
-                            host.buzz(20)
-                            OverlayState.moving = true
-                            dragBubble(down.id, startLocal, host)
-                            OverlayState.moving = false
-                            host.snapBubble()
-                        }
-
-                        First.DRAG -> {
-                            OverlayState.beginWheel(origin, screenWidthPx)
-                            host.buzz(8)
-                            spinWheel(down.id, origin, g, host)
-                            OverlayState.releaseWheel()
-                        }
-
-                        First.UP -> {
-                            host.buzz(6)
-                            if (OverlayState.isOpen) OverlayState.close() else OverlayState.openLast()
-                        }
-
-                        First.GONE -> Unit
-                    }
-                }
-            }
-    ) {
-        Bubble(Modifier.align(Alignment.Center))
+fun BubbleRoot() {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Bubble()
     }
 }
 
-/** Ждём: ушёл за порог, отпустил, или палец потерялся. */
-private suspend fun AwaitPointerEventScope.firstIntent(
-    id: PointerId,
-    start: Offset,
-    slop: Float
-): First {
-    while (true) {
-        val change = awaitPointerEvent().changes.firstOrNull { it.id == id } ?: return First.GONE
-        if (!change.pressed) return First.UP
-        if ((change.position - start).getDistance() > slop) return First.DRAG
-    }
-}
-
-/**
- * Таскание пузыря. Шаг считается от точки нажатия, а не от прошлого события:
- * окно едет за пальцем, поэтому местная координата каждый раз возвращается
- * туда же, и разница между соседними событиями всегда была бы нулём.
- */
-private suspend fun AwaitPointerEventScope.dragBubble(
-    id: PointerId,
-    start: Offset,
-    host: OverlayHost
-) {
-    while (true) {
-        val change = awaitPointerEvent().changes.firstOrNull { it.id == id } ?: return
-        if (!change.pressed) return
-        change.consume()
-        val step = change.position - start
-        if (step.x != 0f || step.y != 0f) host.moveBubble(step.x, step.y)
-    }
-}
-
-/** Ведение по колесу. Окно неподвижно, поэтому экранная точка считается прямо. */
-private suspend fun AwaitPointerEventScope.spinWheel(
-    id: PointerId,
-    origin: Offset,
-    g: WheelGeometry,
-    host: OverlayHost
-) {
-    var lastIndex = -1
-    var lastMode = WheelMode.CANCEL
-
-    while (true) {
-        val change = awaitPointerEvent().changes.firstOrNull { it.id == id } ?: return
-        if (!change.pressed) return
-        change.consume()
-
-        val point = Offset(
-            OverlayState.bubbleLeft + change.position.x,
-            OverlayState.bubbleTop + change.position.y
-        )
-        val (virtual, mode) = selectionFor(SECTION_COUNT, origin, point, g)
-        OverlayState.dragTo(point, virtual, mode)
-
-        val index = virtual.toInt()
-        if (index != lastIndex && mode != WheelMode.CANCEL) {
-            lastIndex = index
-            host.buzz(8)
-        }
-        if (mode != lastMode) {
-            lastMode = mode
-            OverlayState.createArmed = mode == WheelMode.CREATE
-            if (mode == WheelMode.CREATE) host.buzz(18)
-        }
-    }
-}
-
-private const val SECTION_COUNT = 4
-
-/** Сам кружок. В покое полупрозрачный, чтобы не лез в глаза поверх чужого экрана. */
 @Composable
-private fun Bubble(modifier: Modifier = Modifier) {
+private fun Bubble() {
     val moving = OverlayState.moving
     val open = OverlayState.isOpen
     val syncing = OverlayState.syncing
@@ -200,7 +64,7 @@ private fun Bubble(modifier: Modifier = Modifier) {
     )
 
     Box(
-        modifier
+        Modifier
             .size(56.dp)
             .scale(scale)
             .clip(RoundedCornerShape(percent = 50))
@@ -236,7 +100,7 @@ private fun SyncRing() {
         initialValue = 0f,
         targetValue = 360f,
         animationSpec = infiniteRepeatable(
-            animation = tween(1100, easing = androidx.compose.animation.core.LinearEasing),
+            animation = tween(1100, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
         label = "syncAngle"
