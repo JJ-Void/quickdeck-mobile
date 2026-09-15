@@ -1,5 +1,6 @@
 package ru.quickdeck.mobile.ui
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -37,6 +38,8 @@ import ru.quickdeck.mobile.core.Q
 import ru.quickdeck.mobile.core.QIcon
 import ru.quickdeck.mobile.core.T
 import ru.quickdeck.mobile.core.Type
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import ru.quickdeck.mobile.data.Stage
 import ru.quickdeck.mobile.data.Status
 
@@ -389,6 +392,110 @@ fun <E> WheelPicker(
                     )
                 }
             }
+        }
+    }
+}
+
+// --- отправка -------------------------------------------------------------
+
+/** Что сейчас с отправкой. Одно состояние на кнопку, без своих флагов по месту. */
+enum class SendPhase { IDLE, SENDING, SENT, FAILED }
+
+/**
+ * Состояние отправки карточки. Живёт рядом с экраном, переживает перерисовку
+ * и не даёт нажать второй раз, пока первая отправка не закончилась.
+ */
+@Stable
+class SendState {
+    var phase by mutableStateOf(SendPhase.IDLE)
+        internal set
+
+    val busy: Boolean get() = phase == SendPhase.SENDING
+}
+
+@Composable
+fun rememberSendState(): SendState = remember { SendState() }
+
+/**
+ * Кнопка отправки карточки: один механизм на приложение и на оверлей.
+ *
+ * Отправляет не «текст вообще», а готовую карточку — её собирает вызывающий,
+ * из тех же данных, что показаны на экране. Результат берётся из ответа
+ * системы (ушло ли в выбранное приложение), а не из того, что мы нажали:
+ * если делиться нечем, кнопка честно скажет об этом и даст повторить.
+ *
+ * Вибро — только на успехе: это подтверждение, а не аккомпанемент.
+ */
+@Composable
+fun SendButton(
+    label: String,
+    state: SendState,
+    modifier: Modifier = Modifier,
+    dark: Boolean = false,
+    send: () -> Boolean
+) {
+    val scope = rememberCoroutineScope()
+    val haptic = LocalHapticFeedback.current
+
+    val tone = when (state.phase) {
+        SendPhase.SENT -> T.success
+        SendPhase.FAILED -> T.danger
+        else -> T.accent
+    }
+    val text = when (state.phase) {
+        SendPhase.SENDING -> "Отправляем…"
+        SendPhase.SENT -> "Отправлено"
+        SendPhase.FAILED -> "Не ушло — повторить"
+        SendPhase.IDLE -> label
+    }
+    val icon = when (state.phase) {
+        SendPhase.SENT -> Ic.check
+        SendPhase.FAILED -> Ic.close
+        else -> Ic.send
+    }
+    val fill by animateColorAsState(
+        targetValue = when {
+            dark -> tone.fill.copy(alpha = if (state.phase == SendPhase.IDLE) 0.18f else 0.30f)
+            state.phase == SendPhase.IDLE -> T.surface
+            else -> tone.chip
+        },
+        animationSpec = tween(T.MS_STATE, easing = T.curve),
+        label = "sendFill"
+    )
+    val ink = if (dark) (if (state.phase == SendPhase.IDLE) T.textOnDark else tone.fill) else tone.ink
+
+    Pressable(
+        {
+            if (state.busy) return@Pressable
+            scope.launch {
+                state.phase = SendPhase.SENDING
+                val ok = runCatching { send() }.getOrDefault(false)
+                state.phase = if (ok) SendPhase.SENT else SendPhase.FAILED
+                if (ok) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                delay(2400)
+                if (state.phase != SendPhase.SENDING) state.phase = SendPhase.IDLE
+            }
+        },
+        modifier.fillMaxWidth()
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = T.touchMin)
+                .clip(RoundedCornerShape(T.rControl))
+                .background(fill)
+                .border(
+                    1.dp,
+                    if (dark) Color.Transparent else if (state.phase == SendPhase.IDLE) T.hairline else tone.fill,
+                    RoundedCornerShape(T.rControl)
+                )
+                .padding(horizontal = T.md),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            QIcon(icon, size = 18.dp, tint = ink, stroke = 2f)
+            Spacer(Modifier.width(T.sm))
+            Q(text, Type.small, ink, 1)
         }
     }
 }

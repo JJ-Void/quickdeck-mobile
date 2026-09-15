@@ -46,6 +46,16 @@ interface OverlayHost {
     /** Размыть то, что за панелью. Включается, только пока панель видна. */
     fun panelBlur(on: Boolean)
 
+    /**
+     * Убрать окно панели с экрана, когда панель закрыта.
+     *
+     * Невидимое полноэкранное окно всё равно остаётся наложением, а из-за
+     * наложения Android запрещает нажимать на защищённые экраны: подтверждение
+     * входа в Google, смена аккаунта, системные разрешения. Поэтому закрытая
+     * панель не просто прозрачная, а снятая.
+     */
+    fun panelVisible(value: Boolean)
+
     /** Притянуть пузырь к ближайшему краю и запомнить место. */
     fun snapBubble()
 
@@ -84,6 +94,13 @@ object OverlayState {
         private set
 
     var card by mutableStateOf<CardRef?>(null)
+        private set
+
+    /** Откуда пришли: объект и договор последней открытой карточки. */
+    var contextSiteId: String? = null
+        private set
+
+    var contextContractId: String? = null
         private set
 
     // --- колесо ---------------------------------------------------------
@@ -133,6 +150,7 @@ object OverlayState {
         createArmed = false
         card = null
         mode = PanelMode.WHEEL
+        host?.panelVisible(true)
         host?.panelBlur(true)
     }
 
@@ -159,13 +177,29 @@ object OverlayState {
         section = value
         card = null
         mode = PanelMode.BROWSE
+        host?.panelVisible(true)
+        host?.panelBlur(true)
         host?.panelTouchable(true)
     }
 
+    /**
+     * Открытая карточка — это и есть контекст: задача, поставленная отсюда,
+     * привяжется к тому же объекту или договору без повторного выбора.
+     */
     fun openCard(ref: CardRef) {
         card = ref
         section = ref.section
+        when (ref.section) {
+            Section.SITES -> {
+                contextSiteId = ref.id
+                contextContractId = null
+            }
+            Section.CONTRACTS -> contextContractId = ref.id
+            else -> Unit          // заказчик и сотрудник объект не задают
+        }
         mode = PanelMode.CARD
+        host?.panelVisible(true)
+        host?.panelBlur(true)
         host?.panelTouchable(true)
     }
 
@@ -180,12 +214,15 @@ object OverlayState {
     fun close() {
         mode = PanelMode.HIDDEN
         card = null
+        contextSiteId = null
+        contextContractId = null
         virtual = 0f
         createArmed = false
         wheelMode = WheelMode.CANCEL
         moving = false
         host?.panelBlur(false)
         host?.panelTouchable(false)
+        host?.panelVisible(false)
     }
 
     val isOpen: Boolean get() = mode != PanelMode.HIDDEN

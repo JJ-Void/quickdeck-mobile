@@ -198,6 +198,7 @@ fun SiteCard(
     onOpenContract: (String) -> Unit
 ) {
     val ctx = LocalContext.current
+    val send = rememberSendState()
     val stage = db.stageOfSite(site.id)
     Column(Modifier.fillMaxWidth().padding(T.lg)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -205,7 +206,9 @@ fun SiteCard(
             Spacer(Modifier.width(T.sm))
             if (stage != null) StageChip(stage)
         }
-        if (site.code.isNotBlank()) Q(site.code, Type.caption, T.text3)
+        // Номер и полное наименование — только если это не копия имени.
+        val sub = listOf(site.codeLabel, site.subName).filter { it.isNotBlank() }.joinToString(" · ")
+        if (sub.isNotBlank()) Q(sub, Type.caption, T.text3, 2)
 
         Spacer(Modifier.height(T.lg))
         Progress(site.progress)
@@ -217,7 +220,7 @@ fun SiteCard(
         KeyValue("Адрес", site.address)
         KeyValue("Тип", site.buildingType)
         if (site.area > 0) KeyValue("Площадь", "${trimNumber(site.area)} ${site.unit}")
-        if (site.fullName.isNotBlank()) KeyValue("Полное", site.fullName)
+        if (site.subName.isNotBlank()) KeyValue("Полное", site.subName)
         if (site.note.isNotBlank()) KeyValue("Комментарий", site.note)
 
         val list = db.contractsOfSite(site.id)
@@ -242,21 +245,24 @@ fun SiteCard(
         Spacer(Modifier.height(T.xl))
         PrimaryButton("Добавить договор", onAddContract)
         Spacer(Modifier.height(T.sm))
-        Row(horizontalArrangement = Arrangement.spacedBy(T.sm)) {
-            GhostButton("Отправить", { Actions.share(ctx, siteText(site, db), "Карточка объекта") }, Modifier.weight(1f))
-            GhostButton("Изменить", onEdit, Modifier.weight(1f))
+        SendButton("Отправить карточку", send) {
+            Actions.share(ctx, siteText(site, db), "Карточка объекта")
         }
+        Spacer(Modifier.height(T.sm))
+        GhostButton("Изменить", onEdit, Modifier.fillMaxWidth())
     }
 }
 
 @Composable
 fun ContractCard(c: Contract, db: Db, onEdit: () -> Unit) {
     val ctx = LocalContext.current
+    val send = rememberSendState()
     val overdue = overdueText(c.end)
     val status = shownStatus(c)
+    val siteName = db.site(c.siteId)?.name
     Column(Modifier.fillMaxWidth().padding(T.lg)) {
-        Q(c.label(db.site(c.siteId)?.name), Type.title, T.text, 3)
-        if (c.code.isNotBlank()) Q(c.code, Type.caption, T.text3)
+        Q(c.label(siteName), Type.title, T.text, 3)
+        c.codeLabel(siteName).takeIf { it.isNotBlank() }?.let { Q(it, Type.caption, T.text3) }
         Spacer(Modifier.height(T.sm))
         StatusChip(status)
         if (c.amount != 0L) {
@@ -305,16 +311,19 @@ fun ContractCard(c: Contract, db: Db, onEdit: () -> Unit) {
         Spacer(Modifier.height(T.xl))
         PrimaryButton("Изменить договор", onEdit)
         Spacer(Modifier.height(T.sm))
-        GhostButton("Отправить", { Actions.share(ctx, contractText(c, db), "Карточка договора") }, Modifier.fillMaxWidth())
+        SendButton("Отправить карточку", send) {
+            Actions.share(ctx, contractText(c, db), "Карточка договора")
+        }
     }
 }
 
 @Composable
 fun PartyCard(p: Party, db: Db, onEdit: () -> Unit, onOpenSite: (String) -> Unit) {
     val ctx = LocalContext.current
+    val send = rememberSendState()
     Column(Modifier.fillMaxWidth().padding(T.lg)) {
         Q(p.name, Type.title, T.text, 2)
-        if (p.fullName.isNotBlank()) Q(p.fullName, Type.small, T.text2, 3)
+        if (p.subName.isNotBlank()) Q(p.subName, Type.small, T.text2, 3)
 
         if (p.phone.isNotBlank() || p.email.isNotBlank()) {
             Spacer(Modifier.height(T.md))
@@ -363,7 +372,7 @@ fun PartyCard(p: Party, db: Db, onEdit: () -> Unit, onOpenSite: (String) -> Unit
         Spacer(Modifier.height(T.xl))
         PrimaryButton("Изменить", onEdit)
         Spacer(Modifier.height(T.sm))
-        GhostButton("Отправить реквизиты", { Actions.share(ctx, partyText(p), "Реквизиты") }, Modifier.fillMaxWidth())
+        SendButton("Отправить реквизиты", send) { Actions.share(ctx, partyText(p), "Реквизиты") }
     }
 }
 
@@ -374,6 +383,7 @@ fun PartyCard(p: Party, db: Db, onEdit: () -> Unit, onOpenSite: (String) -> Unit
 @Composable
 fun EmployeeCard(e: Employee, db: Db, onEdit: () -> Unit, onTask: () -> Unit) {
     val ctx = LocalContext.current
+    val send = rememberSendState()
     Column(Modifier.fillMaxWidth().padding(T.lg)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Avatar(e, 56.dp)
@@ -423,14 +433,11 @@ fun EmployeeCard(e: Employee, db: Db, onEdit: () -> Unit, onTask: () -> Unit) {
         Spacer(Modifier.height(T.md))
         PrimaryButton("Поставить задачу", onTask)
         Spacer(Modifier.height(T.sm))
-        Row(horizontalArrangement = Arrangement.spacedBy(T.sm)) {
-            GhostButton(
-                "Отправить контакт",
-                { Actions.share(ctx, Actions.employeeText(e), "Контакт сотрудника") },
-                Modifier.weight(1f)
-            )
-            GhostButton("Изменить", onEdit, Modifier.weight(1f))
+        SendButton("Отправить контакт", send) {
+            Actions.share(ctx, Actions.employeeText(e), "Контакт сотрудника")
         }
+        Spacer(Modifier.height(T.sm))
+        GhostButton("Изменить", onEdit, Modifier.fillMaxWidth())
 
         val mine = db.liveContracts.filter {
             it.responsible.equals(e.name, true) || e.name in it.coExecutors

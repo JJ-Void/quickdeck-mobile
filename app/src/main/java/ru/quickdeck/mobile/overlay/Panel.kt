@@ -51,7 +51,14 @@ import ru.quickdeck.mobile.data.Store
 import ru.quickdeck.mobile.data.dateShort
 import ru.quickdeck.mobile.data.money
 import ru.quickdeck.mobile.data.overdueText
+import ru.quickdeck.mobile.data.codeLabel
+import ru.quickdeck.mobile.data.subName
 import ru.quickdeck.mobile.ui.Pressable
+import ru.quickdeck.mobile.ui.SendButton
+import ru.quickdeck.mobile.ui.contractText
+import ru.quickdeck.mobile.ui.partyText
+import ru.quickdeck.mobile.ui.rememberSendState
+import ru.quickdeck.mobile.ui.siteText
 import ru.quickdeck.mobile.ui.shownStatus
 import ru.quickdeck.mobile.ui.tone
 import ru.quickdeck.mobile.ui.trimNumber
@@ -440,8 +447,15 @@ private fun ColumnScope.SiteBody(site: Site, db: Db, host: OverlayHost) {
     Column(
         Modifier.weight(1f, fill = false).verticalScroll(scroll).padding(horizontal = T.lg)
     ) {
-        Q(site.name.ifBlank { "Без названия" }, Type.title, T.textOnDark, 2)
-        if (site.code.isNotBlank()) Q(site.code, Type.caption, T.text2OnDark, 1)
+        val ctx = LocalContext.current
+        val send = rememberSendState()
+
+        // Имя выводится один раз. Полное наименование и номер показываются,
+        // только если это действительно другие данные, а не копия имени.
+        CardHead(
+            title = site.name.ifBlank { "Без названия" },
+            sub = listOf(site.codeLabel, site.subName).filter { it.isNotBlank() }.joinToString(" · ")
+        )
         Spacer(Modifier.height(T.md))
 
         Facts(
@@ -489,6 +503,13 @@ private fun ColumnScope.SiteBody(site: Site, db: Db, host: OverlayHost) {
             host.syncQuietly()
         }
 
+        Spacer(Modifier.height(T.lg))
+        // Карточка уходит собранной из тех же данных, что видны на экране,
+        // и остаётся привязанной к объекту: текст собирает siteText(site, db).
+        SendButton("Отправить карточку", send, dark = true) {
+            Actions.share(ctx, siteText(site, db), "Карточка объекта")
+        }
+
         Spacer(Modifier.height(T.xl))
     }
     BottomActions(
@@ -504,8 +525,11 @@ private fun ColumnScope.ContractBody(c: Contract, db: Db, host: OverlayHost) {
     Column(
         Modifier.weight(1f, fill = false).verticalScroll(scroll).padding(horizontal = T.lg)
     ) {
-        Q(c.label(db.site(c.siteId)?.name), Type.title, T.textOnDark, 3)
-        if (c.code.isNotBlank()) Q(c.code, Type.caption, T.text2OnDark, 1)
+        val ctx = LocalContext.current
+        val send = rememberSendState()
+        val siteName = db.site(c.siteId)?.name
+
+        CardHead(title = c.label(siteName), sub = c.codeLabel(siteName))
         Spacer(Modifier.height(T.xs))
         if (c.amount != 0L) {
             Q(money(c.amount), Type.display, T.textOnDark, 1)
@@ -567,6 +591,11 @@ private fun ColumnScope.ContractBody(c: Contract, db: Db, host: OverlayHost) {
             }
         }
 
+        Spacer(Modifier.height(T.lg))
+        SendButton("Отправить карточку", send, dark = true) {
+            Actions.share(ctx, contractText(c, db), "Карточка договора")
+        }
+
         Spacer(Modifier.height(T.xl))
     }
     BottomActions(primary = Pair("Изменить договор") { host.openForm(Section.CONTRACTS, c.id) })
@@ -579,7 +608,9 @@ private fun ColumnScope.PartyBody(p: Party, db: Db, host: OverlayHost) {
     Column(
         Modifier.weight(1f, fill = false).verticalScroll(scroll).padding(horizontal = T.lg)
     ) {
-        Q(p.name.ifBlank { "Без названия" }, Type.title, T.textOnDark, 2)
+        val send = rememberSendState()
+
+        CardHead(title = p.name.ifBlank { "Без названия" }, sub = p.subName)
         Spacer(Modifier.height(T.md))
 
         if (p.phone.isNotBlank()) {
@@ -595,6 +626,12 @@ private fun ColumnScope.PartyBody(p: Party, db: Db, host: OverlayHost) {
                 "Объектов" to db.sitesOfCustomer(p.id).size.toString()
             )
         )
+
+        Spacer(Modifier.height(T.lg))
+        SendButton("Отправить реквизиты", send, dark = true) {
+            Actions.share(ctx, partyText(p), "Реквизиты")
+        }
+
         Spacer(Modifier.height(T.xl))
     }
     BottomActions(primary = Pair("Изменить") { host.openForm(Section.CUSTOMERS, p.id) })
@@ -611,9 +648,12 @@ private fun ColumnScope.StaffBody(e: Employee, db: Db, host: OverlayHost) {
     Column(
         Modifier.weight(1f, fill = false).verticalScroll(scroll).padding(horizontal = T.lg)
     ) {
-        Q(e.name.ifBlank { "Без имени" }, Type.title, T.textOnDark, 2)
-        val sub = listOf(e.position, e.department).filter { it.isNotBlank() }.joinToString(" · ")
-        if (sub.isNotBlank()) Q(sub, Type.small, T.text2OnDark, 2)
+        val send = rememberSendState()
+
+        CardHead(
+            title = e.name.ifBlank { "Без имени" },
+            sub = listOf(e.position, e.department).filter { it.isNotBlank() }.joinToString(" · ")
+        )
 
         Spacer(Modifier.height(T.lg))
 
@@ -662,6 +702,11 @@ private fun ColumnScope.StaffBody(e: Employee, db: Db, host: OverlayHost) {
             }
         }
 
+        Spacer(Modifier.height(T.lg))
+        SendButton("Отправить контакт", send, dark = true) {
+            Actions.share(ctx, Actions.employeeText(e), "Контакт сотрудника")
+        }
+
         Spacer(Modifier.height(T.xl))
     }
     BottomActions(
@@ -690,6 +735,24 @@ private fun DarkPill(icon: String, label: String, tone: T.Tone, onClick: () -> U
 }
 
 // --- детали --------------------------------------------------------------
+
+/**
+ * Шапка карточки — одна на все четыре раздела.
+ *
+ * Имя показывается ровно один раз, подзаголовок — только если это другие
+ * данные. Раньше каждая карточка рисовала шапку по-своему, и туда легко
+ * попадало то же значение вторым абзацем.
+ */
+@Composable
+private fun CardHead(title: String, sub: String) {
+    Column(Modifier.fillMaxWidth()) {
+        Q(title, Type.title, T.textOnDark, 3)
+        if (sub.isNotBlank()) {
+            Spacer(Modifier.height(T.xs))
+            Q(sub, Type.small, T.text2OnDark, 2)
+        }
+    }
+}
 
 @Composable
 private fun Facts(pairs: List<Pair<String, String>>) {

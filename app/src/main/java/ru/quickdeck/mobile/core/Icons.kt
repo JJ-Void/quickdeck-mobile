@@ -28,6 +28,7 @@ object Ic {
         "M14 2v6h6 M8 13h8 M8 17h5"
     const val plus = "M12 5v14 M5 12h14"
     const val close = "M18 6 6 18 M6 6l12 12"
+    const val alert = "M12 3 2 20h20L12 3z M12 9v5 M12 17h.01"
     const val search = "M11 3a8 8 0 1 0 0 16 8 8 0 0 0 0-16 M21 21l-4.3-4.3"
     const val chevronRight = "m9 6 6 6-6 6"
     const val chevronLeft = "m15 6-6 6 6 6"

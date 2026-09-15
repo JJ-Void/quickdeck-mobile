@@ -216,6 +216,13 @@ class BubbleService : Service(), OverlayHost {
         panelHost = panel
         panelParams = pParams
         runCatching { wm.addView(panel, pParams) }.onFailure { stopSelf(); return }
+        // Закрытая панель схлопывается в точку. Пока она висела прозрачным
+        // окном на весь экран, Android считал её наложением поверх чужого
+        // окна и не давал нажимать на защищённые экраны — подтверждение входа
+        // в Google, смену аккаунта, системные разрешения. Окно при этом не
+        // пересоздаётся: меняется только размер, поэтому поток касаний на
+        // пузыре не рвётся.
+        panelVisible(false)
 
         val savedX = Store.bubbleX
         val savedY = Store.bubbleY
@@ -414,6 +421,21 @@ class BubbleService : Service(), OverlayHost {
         runCatching { wm.updateViewLayout(view, params) }
     }
 
+    /**
+     * Панель закрыта — окно схлопывается в точку, чтобы не считаться
+     * наложением поверх чужих экранов. Открыта — снова во весь экран.
+     */
+    override fun panelVisible(value: Boolean) {
+        val view = panelHost ?: return
+        val params = panelParams ?: return
+        val size = if (value) WindowManager.LayoutParams.MATCH_PARENT else 1
+        if (params.width == size && params.height == size) return
+        params.width = size
+        params.height = size
+        view.visibility = if (value) View.VISIBLE else View.INVISIBLE
+        runCatching { wm.updateViewLayout(view, params) }
+    }
+
     override fun panelTouchable(value: Boolean) {
         val view = panelHost ?: return
         val params = panelParams ?: return
@@ -461,8 +483,11 @@ class BubbleService : Service(), OverlayHost {
     }
 
     override fun openTask(employeeId: String) {
+        // Контекст снимается до close(): панель его забудет, а задача — нет.
+        val site = OverlayState.contextSiteId
+        val contract = OverlayState.contextContractId
         OverlayState.close()
-        startActivity(SheetActivity.task(this, employeeId))
+        startActivity(SheetActivity.task(this, employeeId, site, contract))
     }
 
     @Suppress("DEPRECATION")

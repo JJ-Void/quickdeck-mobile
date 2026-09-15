@@ -479,7 +479,73 @@ val defaultTemplates = listOf(
         body = "{Имя}, задача по {Объект} выполнена?")
 )
 
-/** Подстановка переменных шаблона. Незаполненное просто исчезает. */
+/**
+ * Незаконченная задача: к кому она привязана и чем заполнена.
+ *
+ * Здесь лежит именно исходный шаблон (`body`), а не результат подстановки —
+ * поэтому возврат к черновику и повторное применение шаблона не накапливают
+ * подставленные значения.
+ */
+@Serializable
+data class TaskDraft(
+    val templateId: String? = null,
+    val body: String = "",
+    val siteId: String? = null,
+    val contractId: String? = null
+) {
+    val isEmpty: Boolean
+        get() = body.isBlank() && siteId == null && contractId == null
+}
+
+/** Переменные, которые шаблон умеет подставлять. Всё остальное — опечатка. */
+val templateVars = listOf("Имя", "ФИО", "Объект", "Договор", "Срок", "Статус")
+
+private val varPattern = Regex("\\{([^}\\n]{1,40})\\}")
+
+/**
+ * Значения переменных одним набором. Один источник и для подстановки, и для
+ * проверки: иначе текст и предупреждения разъезжаются.
+ */
+fun templateValues(
+    name: String = "",
+    site: String = "",
+    contract: String = "",
+    due: String = "",
+    status: String = ""
+): Map<String, String> = mapOf(
+    "Имя" to name.trim().split(" ").firstOrNull().orEmpty(),
+    "ФИО" to name.trim(),
+    "Объект" to site,
+    "Договор" to contract,
+    "Срок" to due,
+    "Статус" to status
+)
+
+/**
+ * Переменные, которых нет в списке известных: `{Обьект}`, `{ФИО сотрудника}`.
+ * Такие не подставляются — их видно в предупреждении, а не в отправленном
+ * сообщении в виде фигурных скобок.
+ */
+fun unknownVars(body: String): List<String> =
+    varPattern.findAll(body).map { it.groupValues[1].trim() }
+        .filterNot { it in templateVars }.distinct().toList()
+
+/** Известные переменные, для которых пока нет данных: объект не выбран и т. п. */
+fun missingVars(body: String, values: Map<String, String>): List<String> =
+    varPattern.findAll(body).map { it.groupValues[1].trim() }
+        .filter { it in templateVars && values[it].isNullOrBlank() }.distinct().toList()
+
+/**
+ * Подстановка. Исходный шаблон не трогается — результат всегда считается
+ * заново из него, поэтому повторное применение ничего не накапливает.
+ */
+fun fillTemplate(body: String, values: Map<String, String>): String {
+    var out = body
+    values.forEach { (key, value) -> out = out.replace("{$key}", value) }
+    return out.replace(Regex("\\s{2,}"), " ").trim()
+}
+
+/** Старая сигнатура — чтобы вызовы по месту не переписывать. */
 fun fillTemplate(
     body: String,
     name: String = "",
@@ -487,12 +553,46 @@ fun fillTemplate(
     contract: String = "",
     due: String = "",
     status: String = ""
-): String = body
-    .replace("{Имя}", name.trim().split(" ").firstOrNull().orEmpty())
-    .replace("{ФИО}", name)
-    .replace("{Объект}", site)
-    .replace("{Договор}", contract)
-    .replace("{Срок}", due)
-    .replace("{Статус}", status)
-    .replace(Regex("\\s{2,}"), " ")
-    .trim()
+): String = fillTemplate(body, templateValues(name, site, contract, due, status))
+
+// --- эхо имени ------------------------------------------------------------
+
+/**
+ * Одно и то же значение, попавшее и в имя, и в «полное наименование» или в
+ * номер, — это не данные, а эхо переноса из таблицы. Показывать его второй
+ * раз незачем, поэтому лишнее поле гасится в самой модели, а не в разметке:
+ * иначе каждый новый экран пришлось бы чинить заново.
+ */
+private fun String.echoOf(other: String): Boolean =
+    trim().equals(other.trim(), ignoreCase = true)
+
+val Site.subName: String
+    get() = fullName.takeIf { it.isNotBlank() && !it.echoOf(name) }.orEmpty()
+
+val Site.codeLabel: String
+    get() = code.takeIf { it.isNotBlank() && !it.echoOf(name) }.orEmpty()
+
+val Party.subName: String
+    get() = fullName.takeIf { it.isNotBlank() && !it.echoOf(name) }.orEmpty()
+
+fun Contract.codeLabel(siteName: String?): String =
+    code.takeIf { it.isNotBlank() && !it.echoOf(workKind) && !it.echoOf(label(siteName)) }.orEmpty()
+
+/**
+ * Чистка эха на входе: таблица и бэкап приходят как есть, и поле-дубль лучше
+ * убрать один раз при загрузке, чем обходить его во всех местах вывода.
+ */
+fun Db.deduped(): Db = copy(
+    sites = sites.map { s ->
+        s.copy(
+            fullName = if (s.fullName.echoOf(s.name)) "" else s.fullName,
+            code = if (s.code.echoOf(s.name)) "" else s.code
+        )
+    },
+    customers = customers.map { p ->
+        p.copy(fullName = if (p.fullName.echoOf(p.name)) "" else p.fullName)
+    },
+    contracts = contracts.map { c ->
+        c.copy(code = if (c.code.echoOf(c.workKind)) "" else c.code)
+    }
+)

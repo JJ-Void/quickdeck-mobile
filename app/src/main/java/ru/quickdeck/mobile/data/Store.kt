@@ -38,14 +38,15 @@ object Store {
         file = File(app.filesDir, "quickdeck.json")
         prefs = app.getSharedPreferences("quickdeck", Context.MODE_PRIVATE)
         _db.value = runCatching {
-            if (file.exists()) json.decodeFromString(Db.serializer(), file.readText()) else Db()
+            // deduped() — на входе гасится эхо имени, приехавшее из таблицы.
+            if (file.exists()) json.decodeFromString(Db.serializer(), file.readText()).deduped() else Db()
         }.getOrElse { Db() }
     }
 
     fun raw(): String = json.encodeToString(Db.serializer(), _db.value)
 
     fun parse(text: String): Db? =
-        runCatching { json.decodeFromString(Db.serializer(), text) }.getOrNull()
+        runCatching { json.decodeFromString(Db.serializer(), text).deduped() }.getOrNull()
 
     fun replaceAll(text: String): Boolean {
         val parsed = parse(text) ?: return false
@@ -149,7 +150,37 @@ object Store {
      * Результат слияния с таблицей. Метки времени расставлены обеими сторонами,
      * поэтому здесь ничего не штампуем — кладём как есть.
      */
-    fun applyMerged(merged: Db) = mutate { merged }
+    fun applyMerged(merged: Db) = mutate { merged.deduped() }
+
+    // --- черновик задачи --------------------------------------------------
+
+    /**
+     * Незаконченная задача переживает перезапуск: привязка к объекту,
+     * выбранный шаблон и набранный текст лежат рядом с сотрудником, которому
+     * задача адресована. Привязка тут одна и та же запись, а не список —
+     * поэтому сколько бы раз ни применялся шаблон, второй связи не заводится.
+     */
+    fun taskDraft(employeeId: String): TaskDraft? {
+        if (!::prefs.isInitialized) return null
+        val raw = prefs.getString("draft:$employeeId", null) ?: return null
+        return runCatching { json.decodeFromString(TaskDraft.serializer(), raw) }.getOrNull()
+    }
+
+    fun saveTaskDraft(employeeId: String, draft: TaskDraft) {
+        if (!::prefs.isInitialized) return
+        if (draft.isEmpty) {
+            clearTaskDraft(employeeId)
+            return
+        }
+        prefs.edit()
+            .putString("draft:$employeeId", json.encodeToString(TaskDraft.serializer(), draft))
+            .apply()
+    }
+
+    fun clearTaskDraft(employeeId: String) {
+        if (!::prefs.isInitialized) return
+        prefs.edit().remove("draft:$employeeId").apply()
+    }
 
     // --- настройки --------------------------------------------------------
 

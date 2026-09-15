@@ -52,6 +52,8 @@ class SheetActivity : ComponentActivity() {
         private const val EXTRA_MODE = "mode"
         private const val EXTRA_SECTION = "section"
         private const val EXTRA_ID = "id"
+        private const val EXTRA_SITE = "siteId"
+        private const val EXTRA_CONTRACT = "contractId"
         private const val MODE_FORM = "form"
         private const val MODE_SEARCH = "search"
         private const val MODE_TASK = "task"
@@ -71,10 +73,21 @@ class SheetActivity : ComponentActivity() {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
 
-        fun task(ctx: Context, employeeId: String): Intent =
+        /**
+         * Задача помнит, откуда её начали: объект или договор приезжают
+         * вместе с сотрудником, и спрашивать их заново не приходится.
+         */
+        fun task(
+            ctx: Context,
+            employeeId: String,
+            siteId: String? = null,
+            contractId: String? = null
+        ): Intent =
             Intent(ctx, SheetActivity::class.java).apply {
                 putExtra(EXTRA_MODE, MODE_TASK)
                 putExtra(EXTRA_ID, employeeId)
+                if (siteId != null) putExtra(EXTRA_SITE, siteId)
+                if (contractId != null) putExtra(EXTRA_CONTRACT, contractId)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
 
@@ -100,6 +113,8 @@ class SheetActivity : ComponentActivity() {
                 mode = mode,
                 section = section,
                 id = intent.getStringExtra(EXTRA_ID),
+                siteId = intent.getStringExtra(EXTRA_SITE),
+                contractId = intent.getStringExtra(EXTRA_CONTRACT),
                 onDone = { finish() }
             )
         }
@@ -113,7 +128,14 @@ class SheetActivity : ComponentActivity() {
 }
 
 @Composable
-private fun SheetRoot(mode: String, section: Section, id: String?, onDone: () -> Unit) {
+private fun SheetRoot(
+    mode: String,
+    section: Section,
+    id: String?,
+    onDone: () -> Unit,
+    siteId: String? = null,
+    contractId: String? = null
+) {
     val db by Store.db.collectAsState()
     val scope = rememberCoroutineScope()
     val maxH = (LocalConfiguration.current.screenHeightDp * 0.92f).dp
@@ -158,7 +180,14 @@ private fun SheetRoot(mode: String, section: Section, id: String?, onDone: () ->
                             Q("Сотрудник не найден", Type.heading, T.text2)
                         }
                     } else {
-                        TaskSheet(employee = who, db = db, onPick = { pick = it }, onClose = onDone)
+                        TaskSheet(
+                            employee = who,
+                            db = db,
+                            onPick = { pick = it },
+                            onClose = onDone,
+                            contextSiteId = siteId,
+                            contextContractId = contractId
+                        )
                     }
                 }
 
