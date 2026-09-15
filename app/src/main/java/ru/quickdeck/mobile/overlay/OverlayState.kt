@@ -13,7 +13,7 @@ import kotlin.math.roundToInt
 data class CardRef(val section: Section, val id: String)
 
 /** Уровни колоды: чем глубже, тем конкретнее. */
-enum class DeckLevel { CATEGORIES, GROUPS, ITEMS, CARD }
+enum class DeckLevel { CATEGORIES, SUMMARY, GROUPS, ITEMS, CARD }
 
 /** Что сейчас на экране поверх всего. */
 enum class PanelMode {
@@ -70,6 +70,9 @@ interface OverlayHost {
 
     /** Постановка задачи сотруднику — Activity, там ввод и отправка. */
     fun openTask(employeeId: String)
+
+    /** Настройки — тоже Activity: без них из панели не выйти к обмену и бэкапу. */
+    fun openSettings()
 
     fun buzz(ms: Long)
 
@@ -223,6 +226,13 @@ object OverlayState {
         deck = if (hasGroups) DeckLevel.GROUPS else DeckLevel.ITEMS
     }
 
+    /** Сводка — отдельный уровень: считать её как «раздел» неправильно. */
+    fun openSummary() {
+        card = null
+        group = null
+        deck = DeckLevel.SUMMARY
+    }
+
     /** Группа выбрана — дальше её записи. */
     fun openGroup(value: String) {
         group = value
@@ -255,6 +265,7 @@ object OverlayState {
     /** Шаг назад по уровням. С верхнего уровня выход закрывает панель. */
     fun deckBack(hasGroups: Boolean = true) {
         when (deck) {
+            DeckLevel.SUMMARY -> deck = DeckLevel.CATEGORIES
             DeckLevel.CARD -> deck = DeckLevel.ITEMS
             DeckLevel.ITEMS -> {
                 card = null
@@ -284,6 +295,10 @@ object OverlayState {
      * привяжется к тому же объекту или договору без повторного выбора.
      */
     fun openCard(ref: CardRef) {
+        // Переход из чужого раздела — например, из карточки объекта прямо в
+        // договор. Пачка тут своя, старая не подходит: сбрасываем, и колода
+        // покажет соседей по всему разделу, а не по прежней группе.
+        if (ref.section != section) group = null
         card = ref
         section = ref.section
         when (ref.section) {

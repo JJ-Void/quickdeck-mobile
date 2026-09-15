@@ -68,6 +68,7 @@ fun ColumnScope.DeckLayer(db: Db, host: OverlayHost) {
         DeckLevel.GROUPS -> GroupDeck(db, host)
         DeckLevel.ITEMS -> ItemDeck(db, host)
         DeckLevel.CARD -> CardDeck(db, host)
+        DeckLevel.SUMMARY -> SummaryDeck(db)
     }
 
     DeckHint(level)
@@ -84,12 +85,14 @@ private fun DeckHeader(db: Db, host: OverlayHost) {
         DeckLevel.GROUPS -> section.title
         DeckLevel.ITEMS -> group ?: section.title
         DeckLevel.CARD -> section.one
+        DeckLevel.SUMMARY -> "Сводка"
     }
     val sub = when (level) {
         DeckLevel.CATEGORIES -> "Выбери раздел"
         DeckLevel.GROUPS -> groupTitle(section)
         DeckLevel.ITEMS -> if (group != null) section.title else "${db.count(section)} в реестре"
         DeckLevel.CARD -> listOfNotNull(section.title, group).joinToString(" · ")
+        DeckLevel.SUMMARY -> "Как идут дела"
     }
 
     Row(
@@ -105,6 +108,12 @@ private fun DeckHeader(db: Db, host: OverlayHost) {
         Column(Modifier.weight(1f)) {
             Q(title, Type.heading, T.textOnDark, 1)
             Q(sub, Type.caption, T.text2OnDark, 1)
+        }
+        if (level == DeckLevel.CATEGORIES) {
+            // Настройки под рукой: раньше за ними нужно было выходить в
+            // приложение, хотя работа идёт из панели.
+            RoundAction(Ic.settings, "Настройки") { host.openSettings() }
+            Spacer(Modifier.width(T.xs))
         }
         if (level != DeckLevel.CARD) {
             RoundAction(Ic.search, "Найти") { host.openSearch() }
@@ -125,6 +134,7 @@ private fun DeckHint(level: DeckLevel) {
         DeckLevel.GROUPS -> "Листай вбок · тап — открыть пачку"
         DeckLevel.ITEMS -> "Листай вбок · тап — открыть запись"
         DeckLevel.CARD -> "Листай вбок — соседние записи"
+        DeckLevel.SUMMARY -> "Назад — к разделам"
     }
     Box(Modifier.fillMaxWidth().padding(bottom = T.lg), contentAlignment = Alignment.Center) {
         Box(
@@ -279,16 +289,28 @@ private fun ColumnScope.DeckEmpty() {
 
 // --- уровень 1: разделы ---------------------------------------------------
 
+/** Первая карточка колоды — не раздел, а состояние дел. */
+private val SUMMARY_KEY: Section? = null
+
 @Composable
 private fun ColumnScope.CategoryDeck(db: Db, host: OverlayHost) {
-    val sections = remember { Section.entries.toList() }
+    // null — сводка, дальше обычные разделы. Одна лента, разный смысл карточек.
+    val items = remember { listOf<Section?>(SUMMARY_KEY) + Section.entries.toList() }
     Carousel(
-        items = sections,
-        startIndex = sections.indexOf(OverlayState.section).coerceAtLeast(0),
-        key = { it.name },
-        onCenter = { OverlayState.focusSection(it, host) },
-        onOpen = { OverlayState.openItems(it, groupsOf(db, it).size > 1) }
-    ) { section, focused ->
+        items = items,
+        startIndex = (items.indexOf(OverlayState.section)).coerceAtLeast(0),
+        key = { it?.name ?: "summary" },
+        onCenter = { if (it != null) OverlayState.focusSection(it, host) else host.buzz(6) },
+        onOpen = {
+            if (it == null) OverlayState.openSummary()
+            else OverlayState.openItems(it, groupsOf(db, it).size > 1)
+        }
+    ) { value, focused ->
+        if (value == null) {
+            SummaryFace(db, focused)
+            return@Carousel
+        }
+        val section = value
         Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
             Box(
                 Modifier
@@ -310,6 +332,115 @@ private fun ColumnScope.CategoryDeck(db: Db, host: OverlayHost) {
             Q("${db.count(section)} в реестре", Type.small, T.text2OnDark, 1)
         }
     }
+}
+
+/**
+ * Сводка — первое, что видно при открытии панели: сколько в работе, что
+ * горит, сколько денег ждёт. Руководителю обычно нужен именно этот ответ,
+ * а не список из сорока записей.
+ */
+@Composable
+private fun SummaryFace(db: Db, focused: Boolean) {
+    val s = remember(db) { summaryOf(db) }
+    Column(Modifier.fillMaxSize()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(T.rIcon))
+                    .background(T.accent.fill.copy(alpha = if (focused) 0.22f else 0.12f)),
+                contentAlignment = Alignment.Center
+            ) { QIcon(Ic.summary, size = 22.dp, tint = T.accent.fill, stroke = 2f) }
+            Spacer(Modifier.width(T.md))
+            Column {
+                Q("Сводка", Type.title, T.textOnDark, 1)
+                Q("на сегодня", Type.caption, T.text2OnDark, 1)
+            }
+        }
+
+        Spacer(Modifier.height(T.lg))
+        SummaryLine("В работе", "${s.inWork}", T.accent)
+        SummaryLine("Просрочено", "${s.overdue}", if (s.overdue > 0) T.danger else T.muted)
+        SummaryLine("Ждёт оплаты", "${s.awaitingPay}", if (s.awaitingPay > 0) T.warning else T.muted)
+
+        Spacer(Modifier.height(T.md))
+        Q("Законтрактовано", Type.caption, T.text2OnDark)
+        Q(money(s.contracted), Type.display, T.textOnDark, 1)
+        Spacer(Modifier.height(T.xs))
+        Q("Осталось получить " + money(s.rest), Type.small, T.text2OnDark, 1)
+
+        if (s.soon.isNotEmpty()) {
+            Spacer(Modifier.height(T.md))
+            Q("Ближайшие сроки", Type.caption, T.text2OnDark)
+            Spacer(Modifier.height(T.xs))
+            s.soon.forEach { (label, due) ->
+                Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+                    QIcon(Ic.clock, size = 14.dp, tint = T.text2OnDark)
+                    Spacer(Modifier.width(T.xs))
+                    Q(label, Type.caption, T.textOnDark, 1, Modifier.weight(1f))
+                    Q(due, Type.caption, T.text2OnDark, 1)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SummaryLine(title: String, value: String, tone: T.Tone) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier
+                .size(8.dp)
+                .clip(RoundedCornerShape(percent = 50))
+                .background(tone.fill)
+        )
+        Spacer(Modifier.width(T.sm))
+        Q(title, Type.small, T.text2OnDark, 1, Modifier.weight(1f))
+        Q(value, Type.amount, T.textOnDark, 1)
+    }
+}
+
+private data class Summary(
+    val inWork: Int,
+    val overdue: Int,
+    val awaitingPay: Int,
+    val contracted: Long,
+    val rest: Long,
+    val soon: List<Pair<String, String>>
+)
+
+/** Считается один раз на изменение реестра, а не на каждую перерисовку. */
+private fun summaryOf(db: Db): Summary {
+    val live = db.liveContracts
+    val active = live.filter { shownStatus(it).stage !in archiveStages && shownStatus(it) != Status.PAID_FULL }
+    val soon = active
+        .filter { it.end.isNotBlank() }
+        .sortedBy { it.end }
+        .take(3)
+        .map { c -> (db.site(c.siteId)?.name ?: c.workKind) to dateShort(c.end) }
+    return Summary(
+        inWork = active.count { shownStatus(it).stage == Stage.PRODUCTION },
+        overdue = live.count { shownStatus(it) == Status.OVERDUE },
+        awaitingPay = active.count { shownStatus(it).stage == Stage.PAYMENT },
+        contracted = active.filter { shownStatus(it).signed }.sumOf { it.amount },
+        rest = active.filter { shownStatus(it).signed }.sumOf { it.restAmount },
+        soon = soon
+    )
+}
+
+/** Развёрнутая сводка — одна карточка во весь рост. */
+@Composable
+private fun ColumnScope.SummaryDeck(db: Db) {
+    Carousel(
+        items = listOf(Unit),
+        startIndex = 0,
+        key = { "summary" },
+        onCenter = { },
+        onOpen = { }
+    ) { _, focused -> SummaryFace(db, focused) }
 }
 
 // --- уровень 2: пачки ------------------------------------------------------
@@ -391,7 +522,11 @@ private fun ColumnScope.GroupDeck(db: Db, host: OverlayHost) {
                 contentAlignment = Alignment.Center
             ) {
                 QIcon(
-                    if (pack.archive) Ic.layers else sectionIcon(section),
+                    when {
+                        pack.archive -> Ic.layers
+                        section == Section.STAFF -> departmentIcon(pack.name)
+                        else -> sectionIcon(section)
+                    },
                     size = 30.dp,
                     tint = if (pack.archive) T.text2OnDark else pack.tone.fill,
                     stroke = if (focused) 2f else 1.75f
@@ -424,6 +559,7 @@ private data class ItemFace(
     val stage: Stage?,
     val trailing: String,
     val group: String?,
+    val icon: String,
     val facts: List<Pair<String, String>>
 )
 
@@ -448,7 +584,7 @@ private fun ColumnScope.ItemDeck(db: Db, host: OverlayHost) {
                         .clip(RoundedCornerShape(T.rIcon))
                         .background(Color.White.copy(alpha = 0.08f)),
                     contentAlignment = Alignment.Center
-                ) { QIcon(sectionIcon(section), size = 22.dp, tint = T.text2OnDark) }
+                ) { QIcon(face.icon, size = 22.dp, tint = T.text2OnDark) }
                 Spacer(Modifier.width(T.md))
                 face.stage?.let { DarkStageChip(it) }
             }
@@ -493,6 +629,7 @@ private fun facesOf(db: Db, section: Section): List<ItemFace> = when (section) {
             stage = db.stageOfSite(s.id),
             trailing = if (s.progress > 0) "${s.progress} %" else "",
             group = db.customer(s.customerId)?.name ?: "Без заказчика",
+            icon = buildingIcon(s.buildingType),
             facts = listOf(
                 "Адрес" to s.address,
                 "Тип" to s.buildingType,
@@ -511,6 +648,7 @@ private fun facesOf(db: Db, section: Section): List<ItemFace> = when (section) {
             trailing = if (c.amount != 0L) money(c.amount) else "",
             // Отказ и расторжение — в архив, остальное по стадии.
             group = if (st.stage in archiveStages || st == Status.PAID_FULL) ARCHIVE else st.stage.label,
+            icon = departmentIcon(db.refs.departmentOf(c.workKind)),
             facts = listOf(
                 "Объект" to (db.site(c.siteId)?.name ?: ""),
                 "Срок" to (c.end.takeIf { it.isNotBlank() }?.let { dateShort(it) } ?: ""),
@@ -527,6 +665,7 @@ private fun facesOf(db: Db, section: Section): List<ItemFace> = when (section) {
             stage = null,
             trailing = "",
             group = null,
+            icon = Ic.customers,
             facts = listOf(
                 "Телефон" to p.phone,
                 "Руководитель" to p.director,
@@ -543,6 +682,7 @@ private fun facesOf(db: Db, section: Section): List<ItemFace> = when (section) {
             stage = null,
             trailing = "",
             group = e.department.ifBlank { "Без отдела" },
+            icon = departmentIcon(e.department),
             facts = listOf(
                 "Телефон" to e.phones.firstOrNull().orEmpty(),
                 "Чатов" to e.chats.size.toString(),
@@ -563,10 +703,15 @@ private fun facesOf(db: Db, section: Section): List<ItemFace> = when (section) {
 private fun ColumnScope.CardDeck(db: Db, host: OverlayHost) {
     val section = OverlayState.section
     val group = OverlayState.group
-    val ids = remember(db, section, group) {
-        facesOf(db, section).filter { group == null || it.group == group }.map { it.id }
-    }
     val startId = OverlayState.card?.id
+    // Если открытая запись не из текущей пачки (пришли из другой карточки),
+    // соседями становится весь раздел — иначе лента оказалась бы пустой.
+    val ids = remember(db, section, group, startId) {
+        val all = facesOf(db, section)
+        val inGroup = all.filter { group == null || it.group == group }
+        val list = if (startId != null && inGroup.none { it.id == startId }) all else inGroup
+        list.map { it.id }
+    }
 
     Carousel(
         items = ids,

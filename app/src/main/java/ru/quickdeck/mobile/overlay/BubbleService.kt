@@ -482,6 +482,13 @@ class BubbleService : Service(), OverlayHost {
         startActivity(SheetActivity.search(this))
     }
 
+    override fun openSettings() {
+        OverlayState.close()
+        val intent = packageManager.getLaunchIntentForPackage(packageName)
+            ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { if (intent != null) startActivity(intent) }
+    }
+
     override fun openTask(employeeId: String) {
         // Контекст снимается до close(): панель его забудет, а задача — нет.
         val site = OverlayState.contextSiteId

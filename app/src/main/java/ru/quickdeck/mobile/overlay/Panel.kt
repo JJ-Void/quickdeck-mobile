@@ -170,6 +170,43 @@ private fun Hint(text: String) {
     }
 }
 
+/**
+ * Иконка объекта по типу здания: школа выглядит школой, завод — заводом.
+ * Каска на всём подряд не говорит ничего, а силуэт узнаётся мгновенно.
+ */
+internal fun buildingIcon(type: String): String {
+    val t = type.lowercase()
+    return when {
+        t.contains("админ") || t.contains("офис") -> Ic.office
+        t.contains("образ") || t.contains("школ") || t.contains("детс") || t.contains("учеб") -> Ic.school
+        t.contains("жил") || t.contains("общеж") || t.contains("кварт") -> Ic.living
+        t.contains("промышл") || t.contains("завод") || t.contains("цех") || t.contains("производ") -> Ic.factory
+        t.contains("медиц") || t.contains("больн") || t.contains("поликлин") -> Ic.medical
+        t.contains("торг") || t.contains("магаз") -> Ic.store
+        t.contains("склад") || t.contains("ангар") -> Ic.storage
+        t.contains("спорт") -> Ic.sport
+        t.contains("культ") || t.contains("музе") || t.contains("театр") -> Ic.culture
+        t.contains("энерг") || t.contains("подстан") || t.contains("котель") -> Ic.energy
+        else -> Ic.sites
+    }
+}
+
+/** Иконка отдела: у каждого своё дело, и знак у каждого свой. */
+internal fun departmentIcon(dept: String): String {
+    val d = dept.lowercase()
+    return when {
+        d.contains("пто") -> Ic.deptPto
+        d.contains("сметн") -> Ic.deptEstimate
+        d.contains("проект") -> Ic.deptDesign
+        d.contains("обслед") -> Ic.deptSurvey
+        d.contains("юр") -> Ic.deptLegal
+        d.contains("снаб") -> Ic.deptSupply
+        d.contains("монтаж") || d.contains("строит") || d.contains("смр") -> Ic.deptBuild
+        d.contains("менеджмент") || d.contains("руковод") -> Ic.deptLead
+        else -> Ic.staff
+    }
+}
+
 internal fun sectionIcon(s: Section): String = when (s) {
     Section.SITES -> Ic.sites
     Section.CONTRACTS -> Ic.contracts
