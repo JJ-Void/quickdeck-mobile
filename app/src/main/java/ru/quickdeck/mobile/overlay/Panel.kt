@@ -571,11 +571,26 @@ internal fun ColumnScope.ContractBody(c: Contract, db: Db, host: OverlayHost) {
             Spacer(Modifier.height(T.sm))
         }
 
+        // Связанные записи открываются сразу карточкой: из договора в объект
+        // и в человека — один тап, без возврата на уровень списка.
+        FactLink("Объект", db.site(c.siteId)?.name ?: "", c.siteId?.let { id ->
+            { OverlayState.openCard(CardRef(Section.SITES, id)) }
+        })
+        val boss = db.liveEmployees.firstOrNull { it.name.equals(c.responsible, true) }
+        FactLink("Ответственный", c.responsible, boss?.let { e ->
+            { OverlayState.openCard(CardRef(Section.STAFF, e.id)) }
+        })
+        c.coExecutors.forEachIndexed { index, name ->
+            val mate = db.liveEmployees.firstOrNull { it.name.equals(name, true) }
+            FactLink(
+                if (index == 0) "Соисполнители" else "",
+                name,
+                mate?.let { e -> { OverlayState.openCard(CardRef(Section.STAFF, e.id)) } }
+            )
+        }
         Facts(
             listOf(
-                "Объект" to (db.site(c.siteId)?.name ?: ""),
                 "Отдел" to db.refs.departmentOf(c.workKind),
-                "Ответственный" to c.responsible,
                 "Срок" to (c.end.takeIf { it.isNotBlank() }?.let { dateShort(it) } ?: "")
             )
         )
@@ -656,6 +671,29 @@ internal fun ColumnScope.PartyBody(p: Party, db: Db, host: OverlayHost) {
                 "Объектов" to db.sitesOfCustomer(p.id).size.toString()
             )
         )
+
+        val sites = db.sitesOfCustomer(p.id)
+        if (sites.isNotEmpty()) {
+            Spacer(Modifier.height(T.lg))
+            Q("Объекты", Type.caption, T.text2OnDark)
+            Spacer(Modifier.height(T.sm))
+            sites.forEach { s ->
+                Pressable({ OverlayState.openCard(CardRef(Section.SITES, s.id)) }, Modifier.fillMaxWidth()) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(T.rControl))
+                            .background(T.panelCard)
+                            .padding(T.md),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Q(s.name, Type.small, T.textOnDark, 2, Modifier.weight(1f))
+                        db.stageOfSite(s.id)?.let { DarkStageChip(it) }
+                    }
+                }
+                Spacer(Modifier.height(T.xs))
+            }
+        }
 
         Spacer(Modifier.height(T.lg))
         SendButton("Отправить реквизиты", send, dark = true) {
@@ -782,6 +820,37 @@ private fun CardHead(title: String, sub: String) {
             Q(sub, Type.small, T.text2OnDark, 2)
         }
     }
+}
+
+/**
+ * Строка факта, которая ведёт на связанную запись.
+ *
+ * Без ссылки выглядит как обычный факт — значит, переходить некуда: человека
+ * с таким именем в реестре нет, объект не выбран. Так видно, где связь есть,
+ * а где только текст.
+ */
+@Composable
+private fun FactLink(key: String, value: String, onClick: (() -> Unit)?) {
+    if (value.isBlank()) return
+    val row: @Composable () -> Unit = {
+        Row(
+            Modifier.fillMaxWidth().padding(vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Q(key, Type.caption, T.text2OnDark, 1, Modifier.width(104.dp))
+            Q(
+                value,
+                Type.small,
+                if (onClick != null) T.accent.fill else T.textOnDark,
+                2,
+                Modifier.weight(1f)
+            )
+            if (onClick != null) {
+                QIcon(Ic.chevronRight, size = 16.dp, tint = T.accent.fill, stroke = 2f)
+            }
+        }
+    }
+    if (onClick != null) Pressable(onClick, Modifier.fillMaxWidth()) { row() } else row()
 }
 
 @Composable
