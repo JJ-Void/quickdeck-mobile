@@ -108,8 +108,9 @@ fun PanelRoot(host: OverlayHost) {
 
         when (mode) {
             PanelMode.WHEEL -> WheelLayer(db)
-            PanelMode.BROWSE -> SheetLayer { BrowseSheet(db, host) }
-            PanelMode.CARD -> SheetLayer { CardSheet(db, host) }
+            // Реестр живёт колодой по центру экрана: уровни вглубь, соседи
+            // вбок. Лист снизу показывал один уровень и прятал, где ты.
+            PanelMode.BROWSE, PanelMode.CARD -> DeckFrame { DeckLayer(db, host) }
             PanelMode.HIDDEN -> Unit
         }
     }
@@ -169,14 +170,43 @@ private fun Hint(text: String) {
     }
 }
 
-private fun sectionIcon(s: Section): String = when (s) {
+internal fun sectionIcon(s: Section): String = when (s) {
     Section.SITES -> Ic.sites
     Section.CONTRACTS -> Ic.contracts
     Section.CUSTOMERS -> Ic.customers
     Section.STAFF -> Ic.staff
 }
 
-// --- лист снизу ----------------------------------------------------------
+// --- рамка колоды ---------------------------------------------------------
+
+/**
+ * Колода занимает экран целиком и выезжает снизу вверх одним движением:
+ * так видно, что она пришла от пузыря, а не подменила собой приложение.
+ */
+@Composable
+private fun DeckFrame(content: @Composable ColumnScope.() -> Unit) {
+    val appear = remember { MutableTransitionState(false).apply { targetState = true } }
+    AnimatedVisibility(
+        visibleState = appear,
+        enter = slideInVertically(tween(T.MS_SCREEN, easing = T.curve)) { it / 4 } +
+            fadeIn(tween(T.MS_STATE, easing = T.curve)),
+        exit = slideOutVertically(tween(T.MS_EXIT, easing = T.curve)) { it / 4 } +
+            fadeOut(tween(T.MS_EXIT, easing = T.curve))
+    ) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(top = 28.dp, bottom = 12.dp)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null
+                ) { /* клик мимо карточки не закрывает: есть крестик и пузырь */ },
+            content = content
+        )
+    }
+}
+
+// --- лист снизу (оставлен для поиска и форм) -------------------------------
 
 @Composable
 private fun SheetLayer(content: @Composable ColumnScope.() -> Unit) {
@@ -442,7 +472,7 @@ private fun Missing() {
 }
 
 @Composable
-private fun ColumnScope.SiteBody(site: Site, db: Db, host: OverlayHost) {
+internal fun ColumnScope.SiteBody(site: Site, db: Db, host: OverlayHost) {
     val scroll = rememberScrollState()
     Column(
         Modifier.weight(1f, fill = false).verticalScroll(scroll).padding(horizontal = T.lg)
@@ -519,7 +549,7 @@ private fun ColumnScope.SiteBody(site: Site, db: Db, host: OverlayHost) {
 }
 
 @Composable
-private fun ColumnScope.ContractBody(c: Contract, db: Db, host: OverlayHost) {
+internal fun ColumnScope.ContractBody(c: Contract, db: Db, host: OverlayHost) {
     val scroll = rememberScrollState()
     val status = shownStatus(c)
     Column(
@@ -602,7 +632,7 @@ private fun ColumnScope.ContractBody(c: Contract, db: Db, host: OverlayHost) {
 }
 
 @Composable
-private fun ColumnScope.PartyBody(p: Party, db: Db, host: OverlayHost) {
+internal fun ColumnScope.PartyBody(p: Party, db: Db, host: OverlayHost) {
     val ctx = LocalContext.current
     val scroll = rememberScrollState()
     Column(
@@ -642,7 +672,7 @@ private fun ColumnScope.PartyBody(p: Party, db: Db, host: OverlayHost) {
  * поставить задачу. Всё в один тап, не выходя из того, чем занят.
  */
 @Composable
-private fun ColumnScope.StaffBody(e: Employee, db: Db, host: OverlayHost) {
+internal fun ColumnScope.StaffBody(e: Employee, db: Db, host: OverlayHost) {
     val ctx = LocalContext.current
     val scroll = rememberScrollState()
     Column(
@@ -894,7 +924,7 @@ private fun ColumnScope.BottomActions(
 }
 
 @Composable
-private fun RoundAction(icon: String, label: String, accent: Boolean = false, onClick: () -> Unit) {
+internal fun RoundAction(icon: String, label: String, accent: Boolean = false, onClick: () -> Unit) {
     Pressable(onClick) {
         Box(
             Modifier
@@ -914,7 +944,7 @@ private fun RoundAction(icon: String, label: String, accent: Boolean = false, on
 }
 
 @Composable
-private fun DarkStageChip(stage: Stage) {
+internal fun DarkStageChip(stage: Stage) {
     Box(
         Modifier
             .clip(RoundedCornerShape(percent = 50))
