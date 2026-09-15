@@ -93,8 +93,8 @@ object OverlayState {
 
     var createArmed by mutableStateOf(false)
 
-    /** Верх первой карточки стопки. Считается один раз при старте жеста. */
-    var anchorTop by mutableFloatStateOf(0f)
+    /** Строка, в которой стоит выбранный пункт. Считается при старте жеста. */
+    var centerY by mutableFloatStateOf(0f)
         private set
 
     var originX by mutableFloatStateOf(0f)
@@ -124,7 +124,7 @@ object OverlayState {
         val g = WheelGeometry(density)
         fromRight = origin.x > screenWidth / 2f
         originX = origin.x
-        anchorTop = g.anchorFor(origin.y, screenHeight, SECTION_COUNT)
+        centerY = g.centerFor(origin.y, screenHeight)
         virtual = 0f
         wheelMode = WheelMode.CANCEL
         createArmed = false

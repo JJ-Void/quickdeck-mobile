@@ -21,3 +21,5 @@ Thumbs.db
 # Файлы от прошлой версии с полоской у края — лежат вне src, не собираются
 _removed/
 *.old
+local.properties
+build.log

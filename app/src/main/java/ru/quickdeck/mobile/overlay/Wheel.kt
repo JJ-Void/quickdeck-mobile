@@ -15,6 +15,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
@@ -25,7 +26,9 @@ import ru.quickdeck.mobile.core.QIcon
 import ru.quickdeck.mobile.core.T
 import ru.quickdeck.mobile.core.Type
 import kotlin.math.abs
+import kotlin.math.pow
 import kotlin.math.roundToInt
+import kotlin.math.sign
 
 /** Один пункт колеса. Пунктов всегда четыре — это разделы реестра. */
 data class WheelItem(
@@ -37,11 +40,17 @@ data class WheelItem(
 
 /**
  * Геометрия колеса в пикселях. Шаг сетки 4 сохраняется:
- * 64 = 16 × 4, 56 = 14 × 4, 192 = 48 × 4.
+ * 64 = 16 x 4, 56 = 14 x 4, 192 = 48 x 4.
  */
 class WheelGeometry(densityPx: Float) {
-    /** Расстояние между пунктами по вертикали. */
+    /** Расстояние между пунктами по вертикали на экране. */
     val pitch = 64f * densityPx
+
+    /**
+     * Сколько нужно провести пальцем, чтобы лента прокрутилась на пункт.
+     * Меньше видимого шага: колесо крутится легче, чем едет глазами.
+     */
+    val dragPitch = 48f * densityPx
 
     /** Палец почти не ушёл от пузыря — это отмена. */
     val cancelPull = 56f * densityPx
@@ -49,51 +58,65 @@ class WheelGeometry(densityPx: Float) {
     /** Дальше этого — режим «добавить». */
     val createPull = 192f * densityPx
 
-    /** Просвет между пузырём и карточками. */
+    /** Просвет между пузырём и лентой. */
     val gap = 16f * densityPx
 
     val cardWidth = 240f * densityPx
     val cardHeight = 56f * densityPx
 
+    /** Дальше этого расстояния от центра пункт не рисуется. */
+    val visibleSpan = 2.6f
+
     /** Сколько нельзя занимать сверху и снизу: статусная строка и навигация. */
     val safeTop = 96f * densityPx
     val safeBottom = 120f * densityPx
 
-    fun stackHeight(count: Int) = (count - 1) * pitch + cardHeight
-
     /**
-     * Верх первой карточки.
+     * Центр колеса — та строка, в которой стоит выбранный пункт.
      *
-     * Колесо хочет начаться там, где палец лёг на пузырь, чтобы первый пункт
-     * оказался прямо под ним. Но если пузырь висит у края, стопка из четырёх
-     * карточек туда не влезет — тогда она сдвигается внутрь экрана целиком.
-     * Раньше этого не было, и нижние пункты просто уезжали за край.
+     * Хочется поставить её туда, где палец лёг на пузырь. Но у края экрана
+     * соседние пункты вылезли бы за границу, поэтому центр отодвигается
+     * внутрь ровно настолько, чтобы сосед сверху и снизу были видны целиком.
      */
-    fun anchorFor(originY: Float, screenHeight: Float, count: Int): Float {
-        val stack = stackHeight(count)
-        val lowest = screenHeight - safeBottom - stack
-        val wanted = originY - cardHeight / 2f
-        return if (lowest <= safeTop) safeTop else wanted.coerceIn(safeTop, lowest)
+    fun centerFor(originY: Float, screenHeight: Float): Float {
+        val margin = pitch + cardHeight / 2f
+        val top = safeTop + margin
+        val bottom = screenHeight - safeBottom - margin
+        return if (bottom <= top) (screenHeight / 2f) else originY.coerceIn(top, bottom)
     }
+}
+
+/**
+ * Прилипание к центральной позиции.
+ *
+ * Возле целого значения кривая почти плоская — пункт «держится» в центре,
+ * и палец должен пройти заметный кусок, чтобы лента перескочила на
+ * следующий. Это то же ощущение защёлки, что даёт snapFlingBehavior при
+ * прокрутке, только здесь оно работает прямо во время ведения пальцем.
+ */
+fun detent(virtual: Float): Float {
+    val base = kotlin.math.round(virtual)
+    val d = virtual - base
+    return base + sign(d) * (abs(d) * 2f).pow(1.7f) / 2f
 }
 
 /**
  * Чистая функция: где палец — такой и выбор.
  *
- * По вертикали палец показывает прямо на карточку: стопка стоит на месте,
- * двигается только выделение. По горизонтали — насколько человек вытянул:
+ * По вертикали палец крутит ленту: выбранный пункт всегда стоит в центре,
+ * едет лента, а не выделение. По горизонтали — насколько человек вытянул:
  * чуть-чуть значит передумал, нормально — открыть, далеко — новая запись.
  */
 fun selectionFor(
     itemCount: Int,
-    anchorTop: Float,
+    centerY: Float,
     originX: Float,
     finger: Offset,
     g: WheelGeometry
 ): Pair<Float, WheelMode> {
     if (itemCount == 0) return 0f to WheelMode.CANCEL
 
-    val virtual = ((finger.y - anchorTop - g.cardHeight / 2f) / g.pitch)
+    val virtual = ((finger.y - centerY) / g.dragPitch)
         .coerceIn(0f, (itemCount - 1).toFloat())
 
     val pull = abs(finger.x - originX)
@@ -105,44 +128,112 @@ fun selectionFor(
     return virtual to mode
 }
 
-/** Стопка стоит неподвижно, по ней едет выделение — так предсказуемее. */
+/**
+ * Колесо: выбранный пункт в центре, соседи выше и ниже, лента едет за
+ * пальцем. Чем дальше пункт от центра, тем он мельче и прозрачнее —
+ * центр читается сразу, без подписи «выбрано».
+ */
 @Composable
 fun Wheel(
     items: List<WheelItem>,
     virtual: Float,
     mode: WheelMode,
     createArmed: Boolean,
-    anchorTop: Float,
+    centerY: Float,
     originX: Float,
     fromRight: Boolean,
     modifier: Modifier = Modifier
 ) {
     val density = LocalDensity.current.density
     val g = remember(density) { WheelGeometry(density) }
+    val shown = detent(virtual)
     val selected = virtual.roundToInt().coerceIn(0, (items.size - 1).coerceAtLeast(0))
+    val xPx = if (fromRight) originX - g.gap - g.cardWidth else originX + g.gap
 
     Box(modifier.fillMaxSize()) {
-        items.forEachIndexed { index, item ->
-            val isSelected = index == selected
-            val away = abs(index - selected)
-            val fade = if (isSelected) 1f else (1f - 0.18f * away).coerceIn(0.42f, 1f)
+        Lens(
+            widthPx = g.cardWidth,
+            heightPx = g.cardHeight,
+            xPx = xPx,
+            centerY = centerY,
+            active = mode != WheelMode.CANCEL,
+            creating = mode == WheelMode.CREATE
+        )
 
-            val xPx = if (fromRight) originX - g.gap - g.cardWidth else originX + g.gap
-            val yPx = anchorTop + index * g.pitch
+        items.forEachIndexed { index, item ->
+            val away = index - shown
+            val dist = abs(away)
+            if (dist > g.visibleSpan) return@forEachIndexed
+
+            val edge = (dist / g.visibleSpan).coerceIn(0f, 1f)
+            val scale = 1f - 0.16f * edge
+            val fade = (1f - edge).pow(1.4f).coerceIn(0f, 1f)
+            val yPx = centerY - g.cardHeight / 2f + away * g.pitch
 
             WheelCard(
                 item = item,
-                selected = isSelected && mode != WheelMode.CANCEL,
-                creating = isSelected && mode == WheelMode.CREATE,
+                selected = index == selected && mode != WheelMode.CANCEL,
+                creating = index == selected && mode == WheelMode.CREATE,
                 armed = createArmed,
                 widthPx = g.cardWidth,
                 heightPx = g.cardHeight,
                 modifier = Modifier
                     .offset { IntOffset(xPx.roundToInt(), yPx.roundToInt()) }
-                    .alpha(fade)
+                    .scale(scale)
+                    .alpha(0.18f + 0.82f * fade)
             )
         }
     }
+}
+
+/**
+ * Неподвижная рамка в центре: она показывает, куда встанет выбор, ещё до
+ * того, как человек начал крутить. Без неё центр приходится угадывать.
+ */
+@Composable
+private fun Lens(
+    widthPx: Float,
+    heightPx: Float,
+    xPx: Float,
+    centerY: Float,
+    active: Boolean,
+    creating: Boolean
+) {
+    val density = LocalDensity.current
+    val width = with(density) { (widthPx + 12f * density.density).toDp() }
+    val height = with(density) { (heightPx + 10f * density.density).toDp() }
+    val glow by animateFloatAsState(
+        targetValue = if (active) 1f else 0f,
+        animationSpec = tween(T.MS_PRESS, easing = T.curve),
+        label = "lens"
+    )
+    val tint = if (creating) T.accent.fill else Color.White
+
+    Box(
+        Modifier
+            .offset {
+                IntOffset(
+                    (xPx - 6f * density.density).roundToInt(),
+                    (centerY - heightPx / 2f - 5f * density.density).roundToInt()
+                )
+            }
+            .width(width)
+            .height(height)
+            .clip(RoundedCornerShape(T.rCard))
+            .background(
+                Brush.horizontalGradient(
+                    listOf(
+                        tint.copy(alpha = 0.10f * glow),
+                        tint.copy(alpha = 0.03f * glow)
+                    )
+                )
+            )
+            .border(
+                width = 1.dp,
+                color = tint.copy(alpha = 0.10f + 0.26f * glow),
+                shape = RoundedCornerShape(T.rCard)
+            )
+    )
 }
 
 @Composable

@@ -5,7 +5,11 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -18,11 +22,15 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import ru.quickdeck.mobile.core.Ic
 import ru.quickdeck.mobile.core.Q
@@ -283,27 +291,102 @@ fun StatusPicker(value: Status, onPick: (Status) -> Unit) {
         Spacer(Modifier.height(T.md))
         Q("Статус", Type.caption, T.text3)
         Spacer(Modifier.height(T.xs))
-        Column(verticalArrangement = Arrangement.spacedBy(T.xs)) {
-            Status.byStage(stage).forEach { s ->
-                val selected = s == value
-                Pressable({ onPick(s) }, Modifier.fillMaxWidth()) {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = T.touchMin)
-                            .clip(RoundedCornerShape(T.rControl))
-                            .background(if (selected) s.tone().chip else T.surface)
-                            .border(
-                                if (selected) 1.5.dp else 1.dp,
-                                if (selected) s.tone().fill else T.hairline,
-                                RoundedCornerShape(T.rControl)
-                            )
-                            .padding(horizontal = T.md, vertical = T.sm),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Q(s.label, Type.small, if (selected) s.tone().ink else T.text, 2, Modifier.weight(1f))
-                        if (selected) QIcon(Ic.check, size = 18.dp, tint = s.tone().ink, stroke = 2f)
-                    }
+        val list = Status.byStage(stage)
+        WheelPicker(
+            items = list,
+            selected = if (value in list) value else list.firstOrNull(),
+            label = { it.label },
+            onSelect = onPick,
+            accent = { it.tone().fill }
+        )
+    }
+}
+
+/**
+ * Колесо выбора: выбранное значение стоит в центре, соседние видны выше и
+ * ниже, лента крутится с инерцией и прилипает к позиции.
+ *
+ * Обычный список тут проигрывает: в нём выбранное надо искать глазами и
+ * попадать по нему пальцем. В колесе попадать некуда — крутишь до нужного,
+ * и значение уже выбрано. Тот же контрол, что в оверлее, только там лентой
+ * управляет ведение от пузыря, а здесь — обычная прокрутка.
+ */
+@Composable
+fun <E> WheelPicker(
+    items: List<E>,
+    selected: E?,
+    label: (E) -> String,
+    onSelect: (E) -> Unit,
+    modifier: Modifier = Modifier,
+    accent: (E) -> Color = { T.accent.fill },
+    rowHeight: Dp = 44.dp,
+    visibleRows: Int = 5
+) {
+    if (items.isEmpty()) return
+
+    val state = rememberLazyListState()
+    val haptic = LocalHapticFeedback.current
+    val pad = rowHeight * ((visibleRows - 1) / 2)
+
+    // Центральная строка: та, к которой ближе всего остановилась лента.
+    val centerIndex by remember {
+        derivedStateOf {
+            val first = state.firstVisibleItemIndex
+            val offset = state.firstVisibleItemScrollOffset
+            val height = state.layoutInfo.visibleItemsInfo.firstOrNull()?.size ?: 1
+            (first + if (offset > height / 2) 1 else 0).coerceIn(0, items.lastIndex)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        val start = items.indexOf(selected).takeIf { it >= 0 } ?: 0
+        state.scrollToItem(start)
+    }
+
+    // Смена центра — это и есть выбор: отдельного нажатия не нужно.
+    LaunchedEffect(centerIndex) {
+        val item = items.getOrNull(centerIndex) ?: return@LaunchedEffect
+        if (item != selected) {
+            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+            onSelect(item)
+        }
+    }
+
+    Box(modifier.fillMaxWidth().height(rowHeight * visibleRows)) {
+        // Линза: неподвижная рамка, показывающая центр ещё до прокрутки.
+        Box(
+            Modifier
+                .align(Alignment.Center)
+                .fillMaxWidth()
+                .height(rowHeight)
+                .clip(RoundedCornerShape(T.rControl))
+                .background(items.getOrNull(centerIndex)?.let { accent(it) }?.copy(alpha = 0.10f) ?: T.surface)
+                .border(1.5.dp, items.getOrNull(centerIndex)?.let { accent(it) } ?: T.hairline, RoundedCornerShape(T.rControl))
+        )
+
+        LazyColumn(
+            state = state,
+            flingBehavior = rememberSnapFlingBehavior(state),
+            contentPadding = PaddingValues(vertical = pad),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            itemsIndexed(items) { index, item ->
+                val away = kotlin.math.abs(index - centerIndex)
+                val center = index == centerIndex
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(rowHeight)
+                        .alpha(if (center) 1f else (1f - 0.26f * away).coerceIn(0.3f, 1f))
+                        .padding(horizontal = T.md),
+                    contentAlignment = Alignment.CenterStart
+                ) {
+                    Q(
+                        label(item),
+                        if (center) Type.body else Type.small,
+                        if (center) T.text else T.text2,
+                        1
+                    )
                 }
             }
         }

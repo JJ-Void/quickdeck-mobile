@@ -366,7 +366,7 @@ class BubbleService : Service(), OverlayHost {
             val g = WheelGeometry(density)
             val (virtual, mode) = selectionFor(
                 itemCount = OverlayState.SECTION_COUNT,
-                anchorTop = OverlayState.anchorTop,
+                centerY = OverlayState.centerY,
                 originX = OverlayState.originX,
                 finger = Offset(rawX, rawY),
                 g = g

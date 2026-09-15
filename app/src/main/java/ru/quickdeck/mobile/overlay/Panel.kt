@@ -121,7 +121,7 @@ private fun WheelLayer(db: Db) {
         virtual = OverlayState.virtual,
         mode = OverlayState.wheelMode,
         createArmed = OverlayState.createArmed,
-        anchorTop = OverlayState.anchorTop,
+        centerY = OverlayState.centerY,
         originX = OverlayState.originX,
         fromRight = OverlayState.fromRight
     )
