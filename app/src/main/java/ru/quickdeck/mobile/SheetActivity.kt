@@ -6,6 +6,13 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -18,6 +25,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import kotlinx.coroutines.Dispatchers
@@ -34,10 +42,9 @@ import ru.quickdeck.mobile.ui.*
 /**
  * Всё, где нужна клавиатура, живёт здесь — в обычном окне приложения.
  *
- * Раньше формы рисовались внутри окна службы. Чтобы туда пустить клавиатуру,
- * окно приходилось делать фокусируемым, и оно начинало перехватывать весь
- * экран: ни «назад», ни промах мимо кнопки уже не помогали. Обычная Activity
- * получает всё это даром — и клавиатуру, и «назад», и жесты, и прокрутку.
+ * Окну службы для клавиатуры пришлось бы стать фокусируемым, а фокусируемый
+ * оверлей перехватывает весь экран и его нечем закрыть. Обычная Activity
+ * получает и клавиатуру, и «назад», и прокрутку даром.
  */
 class SheetActivity : ComponentActivity() {
 
@@ -45,9 +52,10 @@ class SheetActivity : ComponentActivity() {
         private const val EXTRA_MODE = "mode"
         private const val EXTRA_SECTION = "section"
         private const val EXTRA_ID = "id"
-
         private const val MODE_FORM = "form"
         private const val MODE_SEARCH = "search"
+        private const val MODE_TASK = "task"
+        private const val MODE_TEMPLATES = "templates"
 
         fun form(ctx: Context, section: Section, id: String?): Intent =
             Intent(ctx, SheetActivity::class.java).apply {
@@ -62,6 +70,19 @@ class SheetActivity : ComponentActivity() {
                 putExtra(EXTRA_MODE, MODE_SEARCH)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
+
+        fun task(ctx: Context, employeeId: String): Intent =
+            Intent(ctx, SheetActivity::class.java).apply {
+                putExtra(EXTRA_MODE, MODE_TASK)
+                putExtra(EXTRA_ID, employeeId)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+
+        fun templates(ctx: Context): Intent =
+            Intent(ctx, SheetActivity::class.java).apply {
+                putExtra(EXTRA_MODE, MODE_TEMPLATES)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -73,49 +94,45 @@ class SheetActivity : ComponentActivity() {
         val section = runCatching {
             Section.valueOf(intent.getStringExtra(EXTRA_SECTION) ?: Section.SITES.name)
         }.getOrDefault(Section.SITES)
-        val id = intent.getStringExtra(EXTRA_ID)
 
         setContent {
             SheetRoot(
-                start = if (mode == MODE_SEARCH) Step.Search else Step.Form(section, id),
+                mode = mode,
+                section = section,
+                id = intent.getStringExtra(EXTRA_ID),
                 onDone = { finish() }
             )
         }
     }
 
+    @Suppress("DEPRECATION")
     override fun finish() {
         super.finish()
         overridePendingTransition(0, android.R.anim.fade_out)
     }
 }
 
-/** Шаги внутри листа. Стек короткий: форма, выбор из реестра, поиск. */
-private sealed interface Step {
-    data class Form(val section: Section, val id: String?) : Step
-    data class Pick(val request: PickRequest, val stamp: Long) : Step
-    data object Search : Step
-}
-
 @Composable
-private fun SheetRoot(start: Step, onDone: () -> Unit) {
+private fun SheetRoot(mode: String, section: Section, id: String?, onDone: () -> Unit) {
     val db by Store.db.collectAsState()
     val scope = rememberCoroutineScope()
-    val stack = remember { mutableStateListOf(start) }
     val maxH = (LocalConfiguration.current.screenHeightDp * 0.92f).dp
 
-    fun pop() {
-        if (stack.size > 1) stack.removeAt(stack.size - 1) else onDone()
-    }
+    // Выбор — слой ПОВЕРХ формы, а не переход на другой экран. Когда форма
+    // уходила из композиции, её состояние уничтожалось вместе со всем
+    // набранным, а лямбда выбора писала в уже мёртвое состояние: заказчик
+    // не появлялся и терялось всё заполненное.
+    var pick by remember { mutableStateOf<PickRequest?>(null) }
+    var target by remember { mutableStateOf(section to id) }
 
-    // После правки сразу отправляем в таблицу, чтобы она не расходилась.
     fun saved() {
         if (Store.autoSync && Store.syncConfigured) {
             scope.launch { withContext(Dispatchers.IO) { Sync.run() } }
         }
-        pop()
+        onDone()
     }
 
-    BackHandler { pop() }
+    BackHandler { if (pick != null) pick = null else onDone() }
 
     Box(
         Modifier
@@ -124,48 +141,59 @@ private fun SheetRoot(start: Step, onDone: () -> Unit) {
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
-                onClick = onDone
+                onClick = { if (pick != null) pick = null else onDone() }
             ),
         contentAlignment = Alignment.BottomCenter
     ) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .heightIn(max = maxH)
-                .clip(RoundedCornerShape(topStart = T.rSheet, topEnd = T.rSheet))
-                .background(T.bg)
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null
-                ) { /* тап по листу не закрывает его */ }
-                .windowInsetsPadding(WindowInsets.navigationBars)
-                .imePadding()
-        ) {
-            Grip()
-            when (val step = stack.last()) {
-                is Step.Form -> FormStep(
-                    step = step,
+        SheetSurface(maxH) {
+            when (mode) {
+                "search" -> SearchStep(db = db, onOpen = { target = it }, onClose = onDone)
+
+                "templates" -> TemplatesSheet(db = db, onClose = onDone)
+
+                "task" -> {
+                    val who = db.employee(id)
+                    if (who == null) {
+                        Column(Modifier.fillMaxWidth().padding(T.xl)) {
+                            Q("Сотрудник не найден", Type.heading, T.text2)
+                        }
+                    } else {
+                        TaskSheet(employee = who, db = db, onPick = { pick = it }, onClose = onDone)
+                    }
+                }
+
+                else -> FormStep(
+                    section = target.first,
+                    id = target.second,
                     db = db,
-                    onPick = { stack.add(Step.Pick(it, System.currentTimeMillis())) },
+                    onPick = { pick = it },
                     onSaved = { saved() },
-                    onCancel = { pop() },
-                    onDeleted = { saved() }
-                )
-
-                is Step.Pick -> PickStep(
-                    request = step.request,
-                    db = db,
-                    onDone = { pop() },
-                    onCreate = { section -> stack.add(Step.Form(section, null)) }
-                )
-
-                Step.Search -> SearchStep(
-                    db = db,
-                    onOpen = { ref -> stack.add(Step.Form(ref.first, ref.second)) },
-                    onClose = onDone
+                    onCancel = onDone
                 )
             }
         }
+
+        pick?.let { request -> PickOverlay(request, db, maxH) { pick = null } }
+    }
+}
+
+@Composable
+private fun SheetSurface(maxH: Dp, content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(max = maxH)
+            .clip(RoundedCornerShape(topStart = T.rSheet, topEnd = T.rSheet))
+            .background(T.bg)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null
+            ) { }
+            .windowInsetsPadding(WindowInsets.navigationBars)
+            .imePadding()
+    ) {
+        Grip()
+        content()
     }
 }
 
@@ -186,127 +214,235 @@ private fun Grip() {
 
 @Composable
 private fun ColumnScope.FormStep(
-    step: Step.Form,
+    section: Section,
+    id: String?,
     db: Db,
     onPick: (PickRequest) -> Unit,
     onSaved: () -> Unit,
-    onCancel: () -> Unit,
-    onDeleted: () -> Unit
+    onCancel: () -> Unit
 ) {
-    val id = step.id
-    when (step.section) {
-        Section.SITES -> SiteForm(
-            initial = db.site(id) ?: Site(),
-            db = db,
-            onPick = onPick,
-            onDone = { Store.upsertSite(it); onSaved() },
-            onCancel = onCancel,
-            onDelete = if (id != null) ({ Store.deleteSite(id); onDeleted() }) else null
-        )
+    // Заготовку создаём ОДИН раз. Site() и Party() выдают новый идентификатор
+    // при каждом вызове, и без remember ключ состояния менялся бы на каждой
+    // перерисовке, стирая всё набранное.
+    val key = section to id
+    when (section) {
+        Section.SITES -> {
+            val initial = remember(key) { db.site(id) ?: Site() }
+            SiteForm(
+                initial = initial, db = db, onPick = onPick,
+                onDone = { Store.upsertSite(it); onSaved() },
+                onCancel = onCancel,
+                onDelete = if (id != null) ({ Store.deleteSite(id); onSaved() }) else null
+            )
+        }
 
-        Section.CONTRACTS -> ContractForm(
-            initial = db.contract(id) ?: Contract(),
-            db = db,
-            onPick = onPick,
-            onDone = { Store.upsertContract(it); onSaved() },
-            onCancel = onCancel,
-            onDelete = if (id != null) ({ Store.deleteContract(id); onDeleted() }) else null
-        )
+        Section.CONTRACTS -> {
+            val initial = remember(key) { db.contract(id) ?: Contract() }
+            ContractForm(
+                initial = initial, db = db, onPick = onPick,
+                onDone = { Store.upsertContract(it); onSaved() },
+                onCancel = onCancel,
+                onDelete = if (id != null) ({ Store.deleteContract(id); onSaved() }) else null
+            )
+        }
 
-        Section.CUSTOMERS -> PartyForm(
-            initial = db.customer(id) ?: Party(),
-            title = if (id == null) "Новый заказчик" else "Заказчик",
-            onDone = { Store.upsertCustomer(it); onSaved() },
-            onCancel = onCancel,
-            onDelete = if (id != null) ({ Store.deleteCustomer(id); onDeleted() }) else null
-        )
+        Section.CUSTOMERS -> {
+            val initial = remember(key) { db.customer(id) ?: Party() }
+            PartyForm(
+                initial = initial,
+                title = if (id == null) "Новый заказчик" else "Заказчик",
+                onDone = { Store.upsertCustomer(it); onSaved() },
+                onCancel = onCancel,
+                onDelete = if (id != null) ({ Store.deleteCustomer(id); onSaved() }) else null
+            )
+        }
 
-        Section.CONTRACTORS -> PartyForm(
-            initial = db.contractor(id) ?: Party(),
-            title = if (id == null) "Новый исполнитель" else "Исполнитель",
-            onDone = { Store.upsertContractor(it); onSaved() },
-            onCancel = onCancel,
-            onDelete = if (id != null) ({ Store.deleteContractor(id); onDeleted() }) else null
-        )
+        Section.STAFF -> {
+            val initial = remember(key) { db.employee(id) ?: Employee() }
+            EmployeeForm(
+                initial = initial, db = db, onPick = onPick,
+                onDone = { Store.upsertEmployee(it); onSaved() },
+                onCancel = onCancel,
+                onDelete = if (id != null) ({ Store.deleteEmployee(id); onSaved() }) else null
+            )
+        }
     }
 }
 
-// --- выбор из реестра ----------------------------------------------------
+// --- выбор поверх формы --------------------------------------------------
 
 @Composable
-private fun ColumnScope.PickStep(
-    request: PickRequest,
-    db: Db,
-    onDone: () -> Unit,
-    onCreate: (Section) -> Unit
-) {
-    val title = when (request) {
-        is PickRequest.Customer -> "Заказчик"
-        is PickRequest.Contractor -> "Исполнитель"
-        is PickRequest.SitePick -> "Объект"
-    }
-    val section = when (request) {
-        is PickRequest.Customer -> Section.CUSTOMERS
-        is PickRequest.Contractor -> Section.CONTRACTORS
-        is PickRequest.SitePick -> Section.SITES
-    }
-    val empty = db.count(section) == 0
+private fun BoxScope.PickOverlay(request: PickRequest, db: Db, maxH: Dp, onClose: () -> Unit) {
+    val appear = remember { MutableTransitionState(false).apply { targetState = true } }
 
-    Row(
-        Modifier.fillMaxWidth().padding(start = T.lg, end = T.sm, top = T.md),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Q(title, Type.title, T.text, 1, Modifier.weight(1f))
-        Pressable({ onCreate(section) }) {
-            Box(
+    Box(
+        Modifier
+            .matchParentSize()
+            .background(T.scrim)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClose
+            )
+    )
+
+    Box(Modifier.matchParentSize(), contentAlignment = Alignment.BottomCenter) {
+        AnimatedVisibility(
+            visibleState = appear,
+            enter = slideInVertically(tween(T.MS_SCREEN, easing = T.curve)) { it } +
+                fadeIn(tween(T.MS_STATE, easing = T.curve)),
+            exit = slideOutVertically(tween(T.MS_EXIT, easing = T.curve)) { it } +
+                fadeOut(tween(T.MS_EXIT, easing = T.curve))
+        ) {
+            Column(
                 Modifier
-                    .size(T.touchMin)
-                    .clip(RoundedCornerShape(percent = 50))
-                    .background(T.accent.fill),
-                contentAlignment = Alignment.Center
-            ) { QIcon(Ic.plus, size = 20.dp, tint = androidx.compose.ui.graphics.Color.White, stroke = 2f) }
+                    .fillMaxWidth()
+                    .heightIn(max = maxH)
+                    .clip(RoundedCornerShape(topStart = T.rSheet, topEnd = T.rSheet))
+                    .background(T.bg)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { }
+                    .windowInsetsPadding(WindowInsets.navigationBars)
+                    .imePadding()
+            ) {
+                Grip()
+                Row(
+                    Modifier.fillMaxWidth().padding(start = T.lg, end = T.sm, top = T.md),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Q(request.title, Type.title, T.text, 1, Modifier.weight(1f))
+                    Pressable(onClose) {
+                        Box(Modifier.size(T.touchMin), contentAlignment = Alignment.Center) {
+                            QIcon(Ic.close, size = 20.dp, tint = T.text2)
+                        }
+                    }
+                }
+                Spacer(Modifier.height(T.sm))
+
+                when (request) {
+                    is PickRequest.Values -> ValueList(request, onClose)
+                    is PickRequest.CustomerPick -> PartyList(db.liveCustomers, request.onPick, onClose)
+                    is PickRequest.EmployeePick -> EmployeeList(db.liveEmployees, request.onPick, onClose)
+                    is PickRequest.SitePick -> SiteList(db, request.onPick, onClose)
+                }
+            }
         }
     }
+}
 
-    if (empty) {
-        EmptyState(
-            text = "Здесь пока пусто",
-            hint = "Сначала заведи запись — потом она появится в выборе.",
-            action = "Создать",
-            onAction = { onCreate(section) }
-        )
-        Spacer(Modifier.height(T.md))
-        GhostButton("Отмена", onDone, Modifier.fillMaxWidth().padding(horizontal = T.lg))
-        Spacer(Modifier.height(T.lg))
-        return
+@Composable
+private fun ColumnScope.ValueList(request: PickRequest.Values, onClose: () -> Unit) {
+    LazyColumn(
+        Modifier.weight(1f, fill = false),
+        contentPadding = PaddingValues(start = T.lg, end = T.lg, bottom = T.lg),
+        verticalArrangement = Arrangement.spacedBy(T.xs)
+    ) {
+        items(request.options) { option ->
+            val selected = option.equals(request.current, true)
+            Pressable({ request.onPick(option); onClose() }, Modifier.fillMaxWidth()) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = T.touchMin)
+                        .clip(RoundedCornerShape(T.rControl))
+                        .background(if (selected) T.accent.chip else T.surface)
+                        .padding(horizontal = T.md, vertical = T.sm),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Q(option, Type.body, if (selected) T.accent.ink else T.text, 2, Modifier.weight(1f))
+                    if (selected) QIcon(Ic.check, size = 18.dp, tint = T.accent.ink, stroke = 2f)
+                }
+            }
+        }
     }
+}
+
+@Composable
+private fun ColumnScope.PartyList(
+    list: List<Party>,
+    onPick: (Party) -> Unit,
+    onClose: () -> Unit
+) {
+    var fresh by remember { mutableStateOf("") }
 
     LazyColumn(
         Modifier.weight(1f, fill = false),
-        contentPadding = PaddingValues(T.lg),
+        contentPadding = PaddingValues(start = T.lg, end = T.lg),
         verticalArrangement = Arrangement.spacedBy(T.sm)
     ) {
-        when (request) {
-            is PickRequest.Customer -> items(db.liveCustomers, key = { it.id }) { p ->
-                PartyRow(p, p.inn.takeIf { it.isNotBlank() }?.let { "ИНН $it" }, Ic.customers) {
-                    request.onPick(p); onDone()
-                }
-            }
-
-            is PickRequest.Contractor -> items(db.liveContractors, key = { it.id }) { p ->
-                PartyRow(p, p.inn.takeIf { it.isNotBlank() }?.let { "ИНН $it" }, Ic.contractors) {
-                    request.onPick(p); onDone()
-                }
-            }
-
-            is PickRequest.SitePick -> items(db.liveSites, key = { it.id }) { s ->
-                SiteRow(s, db) { request.onPick(s); onDone() }
+        items(list, key = { it.id }) { p ->
+            PartyRow(p, p.inn.takeIf { it.isNotBlank() }?.let { "ИНН $it" }, Ic.customers) {
+                onPick(p); onClose()
             }
         }
     }
 
-    GhostButton("Отмена", onDone, Modifier.fillMaxWidth().padding(horizontal = T.lg))
-    Spacer(Modifier.height(T.lg))
+    // Заводим по одному названию, не уходя из формы: переход на вторую форму
+    // выгрузил бы первую из композиции вместе со всем набранным.
+    Column(Modifier.padding(T.lg)) {
+        Field("Новый заказчик", fresh, { fresh = it }, placeholder = "Название")
+        Spacer(Modifier.height(T.sm))
+        PrimaryButton("Создать и выбрать", {
+            val made = Party(name = fresh.trim())
+            Store.upsertCustomer(made)
+            onPick(made)
+            onClose()
+        }, enabled = fresh.isNotBlank())
+    }
+}
+
+@Composable
+private fun ColumnScope.EmployeeList(list: List<Employee>, onPick: (Employee) -> Unit, onClose: () -> Unit) {
+    var fresh by remember { mutableStateOf("") }
+
+    LazyColumn(
+        Modifier.weight(1f, fill = false),
+        contentPadding = PaddingValues(start = T.lg, end = T.lg),
+        verticalArrangement = Arrangement.spacedBy(T.sm)
+    ) {
+        items(list, key = { it.id }) { e ->
+            EmployeeRow(e) { onPick(e); onClose() }
+        }
+    }
+
+    Column(Modifier.padding(T.lg)) {
+        Field("Новый сотрудник", fresh, { fresh = it }, placeholder = "Ф. И. О.")
+        Spacer(Modifier.height(T.sm))
+        PrimaryButton("Создать и выбрать", {
+            val made = Employee(name = fresh.trim())
+            Store.upsertEmployee(made)
+            onPick(made)
+            onClose()
+        }, enabled = fresh.isNotBlank())
+    }
+}
+
+@Composable
+private fun ColumnScope.SiteList(db: Db, onPick: (Site) -> Unit, onClose: () -> Unit) {
+    var fresh by remember { mutableStateOf("") }
+
+    LazyColumn(
+        Modifier.weight(1f, fill = false),
+        contentPadding = PaddingValues(start = T.lg, end = T.lg),
+        verticalArrangement = Arrangement.spacedBy(T.sm)
+    ) {
+        items(db.liveSites, key = { it.id }) { s ->
+            SiteRow(s, db) { onPick(s); onClose() }
+        }
+    }
+
+    Column(Modifier.padding(T.lg)) {
+        Field("Новый объект", fresh, { fresh = it }, placeholder = "Краткое наименование")
+        Spacer(Modifier.height(T.sm))
+        PrimaryButton("Создать и выбрать", {
+            val made = Site(name = fresh.trim())
+            Store.upsertSite(made)
+            onPick(made)
+            onClose()
+        }, enabled = fresh.isNotBlank())
+    }
 }
 
 // --- поиск ---------------------------------------------------------------
@@ -322,18 +458,25 @@ private fun ColumnScope.SearchStep(
 
     val sites = remember(q, db) {
         if (q.isEmpty()) db.liveSites else db.liveSites.filter {
-            it.name.lowercase().contains(q) || it.address.lowercase().contains(q)
+            it.name.lowercase().contains(q) || it.address.lowercase().contains(q) ||
+                it.fullName.lowercase().contains(q)
         }
     }
     val contracts = remember(q, db) {
         if (q.isEmpty()) db.liveContracts else db.liveContracts.filter {
-            it.number.lowercase().contains(q) ||
+            it.workKind.lowercase().contains(q) || it.code.lowercase().contains(q) ||
                 (db.site(it.siteId)?.name?.lowercase()?.contains(q) ?: false)
         }
     }
     val parties = remember(q, db) {
-        if (q.isEmpty()) emptyList() else (db.liveCustomers + db.liveContractors).filter {
+        if (q.isEmpty()) emptyList() else db.liveCustomers.filter {
             it.name.lowercase().contains(q) || it.inn.contains(q)
+        }
+    }
+    val people = remember(q, db) {
+        if (q.isEmpty()) emptyList() else db.liveEmployees.filter {
+            it.name.lowercase().contains(q) || it.position.lowercase().contains(q) ||
+                it.department.lowercase().contains(q)
         }
     }
 
@@ -351,7 +494,7 @@ private fun ColumnScope.SearchStep(
 
     Spacer(Modifier.height(T.sm))
     Box(Modifier.padding(horizontal = T.lg)) {
-        Field("Что ищем", query, { query = it }, placeholder = "Цимлянская, 14, ЭнергоКомплекс")
+        Field("Что ищем", query, { query = it }, placeholder = "Цимлянская, ИД, ЭнергоКомплекс")
     }
     Spacer(Modifier.height(T.md))
 
@@ -373,26 +516,25 @@ private fun ColumnScope.SearchStep(
             }
         }
         if (parties.isNotEmpty()) {
-            item { GroupLabel("Стороны") }
+            item { GroupLabel("Заказчики") }
             items(parties, key = { "p" + it.id }) { p ->
-                val isCustomer = db.customers.any { it.id == p.id }
-                PartyRow(
-                    p,
-                    p.inn.takeIf { it.isNotBlank() }?.let { "ИНН $it" },
-                    if (isCustomer) Ic.customers else Ic.contractors
-                ) {
-                    onOpen((if (isCustomer) Section.CUSTOMERS else Section.CONTRACTORS) to p.id)
+                PartyRow(p, p.inn.takeIf { it.isNotBlank() }?.let { "ИНН $it" }, Ic.customers) {
+                    onOpen(Section.CUSTOMERS to p.id)
                 }
             }
         }
-        if (sites.isEmpty() && contracts.isEmpty() && parties.isEmpty()) {
+        if (people.isNotEmpty()) {
+            item { GroupLabel("Сотрудники") }
+            items(people, key = { "e" + it.id }) { e ->
+                EmployeeRow(e) { onOpen(Section.STAFF to e.id) }
+            }
+        }
+        if (sites.isEmpty() && contracts.isEmpty() && parties.isEmpty() && people.isEmpty()) {
             item {
                 Column(
                     Modifier.fillMaxWidth().padding(vertical = T.xl),
                     horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Q("Ничего не нашлось", Type.heading, T.text2)
-                }
+                ) { Q("Ничего не нашлось", Type.heading, T.text2) }
             }
         }
     }

@@ -8,8 +8,8 @@ import kotlinx.serialization.json.Json
 import java.io.File
 
 /**
- * Всё лежит в одном JSON-файле в памяти приложения.
- * Реестр на сотни записей в базе не нуждается, а файл легко слить в таблицу.
+ * Весь реестр в одном JSON-файле. Базы нет и не нужно: записей сотни,
+ * а файл легко выгрузить и слить с таблицей.
  *
  * Хранилище — единственное место, где проставляется updatedAt. Ни один экран
  * не пишет метку сам, иначе слияние однажды разъедется.
@@ -28,6 +28,7 @@ object Store {
     private val _db = MutableStateFlow(Db())
     val db: StateFlow<Db> get() = _db
 
+    val refs: Refs get() = _db.value.refs
     val isReady: Boolean get() = ::file.isInitialized
 
     @Synchronized
@@ -69,39 +70,44 @@ object Store {
     }
 
     // --- запись -----------------------------------------------------------
-    // Каждая правка помечается текущим временем. Это и есть вся механика
-    // синхронизации: кто правил позже, того версия и останется.
+    // Каждая правка помечается временем. Это и есть вся механика обмена:
+    // чья версия свежее, та и остаётся.
 
     fun upsertCustomer(p: Party) = mutate { d ->
-        d.copy(customers = d.customers.put(p.copy(updatedAt = nowMs())))
+        d.copy(customers = d.customers.putParty(p.copy(updatedAt = nowMs())))
     }
 
-    fun upsertContractor(p: Party) = mutate { d ->
-        d.copy(contractors = d.contractors.put(p.copy(updatedAt = nowMs())))
+    fun upsertEmployee(e: Employee) = mutate { d ->
+        d.copy(employees = d.employees.putEmployee(e.copy(updatedAt = nowMs())))
     }
 
     fun upsertSite(s: Site) = mutate { d ->
-        d.copy(sites = d.sites.put(s.copy(updatedAt = nowMs())))
+        d.copy(sites = d.sites.putSite(s.copy(updatedAt = nowMs())))
     }
 
     fun upsertContract(c: Contract) = mutate { d ->
-        d.copy(contracts = d.contracts.put(c.copy(updatedAt = nowMs())))
+        d.copy(contracts = d.contracts.putContract(c.copy(updatedAt = nowMs())))
     }
 
     /** Смена статуса — самое частое действие, поэтому отдельным входом. */
-    fun setSiteStatus(id: String, status: Status) = mutate { d ->
-        val s = d.sites.firstOrNull { it.id == id } ?: return@mutate d
-        d.copy(sites = d.sites.put(s.copy(status = status, updatedAt = nowMs())))
-    }
-
     fun setContractStatus(id: String, status: Status) = mutate { d ->
         val c = d.contracts.firstOrNull { it.id == id } ?: return@mutate d
-        d.copy(contracts = d.contracts.put(c.copy(status = status, updatedAt = nowMs())))
+        d.copy(contracts = d.contracts.putContract(c.copy(status = status, updatedAt = nowMs())))
     }
 
+    /** Готовность — отметка только для телефона, в таблице такого столбца нет. */
     fun setSiteProgress(id: String, percent: Int) = mutate { d ->
         val s = d.sites.firstOrNull { it.id == id } ?: return@mutate d
-        d.copy(sites = d.sites.put(s.copy(progress = percent.coerceIn(0, 100), updatedAt = nowMs())))
+        d.copy(sites = d.sites.putSite(s.copy(progress = percent.coerceIn(0, 100), updatedAt = nowMs())))
+    }
+
+    /** Отметить оплату по договору — второе по частоте действие после статуса. */
+    fun setPaymentPaid(id: String, index: Int, paid: Boolean) = mutate { d ->
+        val c = d.contracts.firstOrNull { it.id == id } ?: return@mutate d
+        if (index !in c.payments.indices) return@mutate d
+        val payments = c.payments.toMutableList()
+        payments[index] = payments[index].copy(paid = paid)
+        d.copy(contracts = d.contracts.putContract(c.copy(payments = payments, updatedAt = nowMs())))
     }
 
     // --- удаление ---------------------------------------------------------
@@ -109,27 +115,39 @@ object Store {
 
     fun deleteCustomer(id: String) = mutate { d ->
         val p = d.customers.firstOrNull { it.id == id } ?: return@mutate d
-        d.copy(customers = d.customers.put(p.copy(deleted = true, updatedAt = nowMs())))
+        d.copy(customers = d.customers.putParty(p.copy(deleted = true, updatedAt = nowMs())))
     }
 
-    fun deleteContractor(id: String) = mutate { d ->
-        val p = d.contractors.firstOrNull { it.id == id } ?: return@mutate d
-        d.copy(contractors = d.contractors.put(p.copy(deleted = true, updatedAt = nowMs())))
+    fun deleteEmployee(id: String) = mutate { d ->
+        val e = d.employees.firstOrNull { it.id == id } ?: return@mutate d
+        d.copy(employees = d.employees.putEmployee(e.copy(deleted = true, updatedAt = nowMs())))
     }
 
     fun deleteSite(id: String) = mutate { d ->
         val s = d.sites.firstOrNull { it.id == id } ?: return@mutate d
-        d.copy(sites = d.sites.put(s.copy(deleted = true, updatedAt = nowMs())))
+        d.copy(sites = d.sites.putSite(s.copy(deleted = true, updatedAt = nowMs())))
     }
 
     fun deleteContract(id: String) = mutate { d ->
         val c = d.contracts.firstOrNull { it.id == id } ?: return@mutate d
-        d.copy(contracts = d.contracts.put(c.copy(deleted = true, updatedAt = nowMs())))
+        d.copy(contracts = d.contracts.putContract(c.copy(deleted = true, updatedAt = nowMs())))
+    }
+
+    // --- шаблоны сообщений ------------------------------------------------
+
+    fun upsertTemplate(t: MsgTemplate) = mutate { d ->
+        val list = if (d.templates.any { it.id == t.id })
+            d.templates.map { if (it.id == t.id) t else it } else d.templates + t
+        d.copy(templates = list)
+    }
+
+    fun deleteTemplate(id: String) = mutate { d ->
+        d.copy(templates = d.templates.filterNot { it.id == id })
     }
 
     /**
-     * Результат слияния с таблицей. Метки времени уже расставлены обеими
-     * сторонами, поэтому здесь ничего не штампуем — просто кладём как есть.
+     * Результат слияния с таблицей. Метки времени расставлены обеими сторонами,
+     * поэтому здесь ничего не штампуем — кладём как есть.
      */
     fun applyMerged(merged: Db) = mutate { merged }
 
@@ -161,6 +179,18 @@ object Store {
         get() = flag("autoSync", true)
         set(v) { if (::prefs.isInitialized) prefs.edit().putBoolean("autoSync", v).apply() }
 
+    /**
+     * Как начинается сообщение. Пустая строка — без обращения вовсе.
+     * Никаких принудительных «Доброе утро»: формат выбирает человек.
+     */
+    var greeting: String
+        get() = str("greeting", "{Имя},")
+        set(v) { if (::prefs.isInitialized) prefs.edit().putString("greeting", v).apply() }
+
+    var lastBackup: String
+        get() = str("lastBackup", "")
+        set(v) { if (::prefs.isInitialized) prefs.edit().putString("lastBackup", v).apply() }
+
     var lastSync: String
         get() = str("lastSync", "")
         set(v) { if (::prefs.isInitialized) prefs.edit().putString("lastSync", v).apply() }
@@ -170,11 +200,14 @@ object Store {
 
 // Замена по идентификатору, добавление в конец. Порядок держим стабильным:
 // список, который прыгает после каждой правки, невозможно читать.
-private fun List<Party>.put(v: Party): List<Party> =
+private fun List<Party>.putParty(v: Party): List<Party> =
     if (any { it.id == v.id }) map { if (it.id == v.id) v else it } else this + v
 
-private fun List<Site>.put(v: Site): List<Site> =
+private fun List<Employee>.putEmployee(v: Employee): List<Employee> =
     if (any { it.id == v.id }) map { if (it.id == v.id) v else it } else this + v
 
-private fun List<Contract>.put(v: Contract): List<Contract> =
+private fun List<Site>.putSite(v: Site): List<Site> =
+    if (any { it.id == v.id }) map { if (it.id == v.id) v else it } else this + v
+
+private fun List<Contract>.putContract(v: Contract): List<Contract> =
     if (any { it.id == v.id }) map { if (it.id == v.id) v else it } else this + v

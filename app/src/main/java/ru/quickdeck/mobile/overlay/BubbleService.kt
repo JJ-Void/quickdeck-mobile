@@ -434,6 +434,11 @@ class BubbleService : Service(), OverlayHost {
         startActivity(SheetActivity.search(this))
     }
 
+    override fun openTask(employeeId: String) {
+        OverlayState.close()
+        startActivity(SheetActivity.task(this, employeeId))
+    }
+
     @Suppress("DEPRECATION")
     override fun buzz(ms: Long) {
         runCatching {

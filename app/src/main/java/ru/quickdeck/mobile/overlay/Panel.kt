@@ -34,17 +34,24 @@ import ru.quickdeck.mobile.core.Q
 import ru.quickdeck.mobile.core.QIcon
 import ru.quickdeck.mobile.core.T
 import ru.quickdeck.mobile.core.Type
+import androidx.compose.ui.platform.LocalContext
+import ru.quickdeck.mobile.core.Actions
 import ru.quickdeck.mobile.data.Contract
 import ru.quickdeck.mobile.data.Db
+import ru.quickdeck.mobile.data.Employee
 import ru.quickdeck.mobile.data.Party
 import ru.quickdeck.mobile.data.Section
 import ru.quickdeck.mobile.data.Site
+import ru.quickdeck.mobile.data.Stage
 import ru.quickdeck.mobile.data.Status
 import ru.quickdeck.mobile.data.Store
 import ru.quickdeck.mobile.data.dateShort
 import ru.quickdeck.mobile.data.money
 import ru.quickdeck.mobile.data.overdueText
 import ru.quickdeck.mobile.ui.Pressable
+import ru.quickdeck.mobile.ui.shownStatus
+import ru.quickdeck.mobile.ui.tone
+import ru.quickdeck.mobile.ui.trimNumber
 
 /**
  * Содержимое большого окна. Всё, что здесь есть, можно только смотреть и
@@ -147,7 +154,7 @@ private fun sectionIcon(s: Section): String = when (s) {
     Section.SITES -> Ic.sites
     Section.CONTRACTS -> Ic.contracts
     Section.CUSTOMERS -> Ic.customers
-    Section.CONTRACTORS -> Ic.contractors
+    Section.STAFF -> Ic.staff
 }
 
 // --- лист снизу ----------------------------------------------------------
@@ -247,27 +254,29 @@ private fun ColumnScope.BrowseSheet(db: Db, host: OverlayHost) {
     ) {
         when (section) {
             Section.SITES -> items(db.liveSites, key = { it.id }) { s ->
+                val active = db.activeContractsOfSite(s.id).size
                 PanelRow(
                     title = s.name.ifBlank { "Без названия" },
                     subtitle = listOfNotNull(
                         db.customer(s.customerId)?.name,
-                        s.deadline.takeIf { it.isNotBlank() }?.let { "до ${dateShort(it)}" }
+                        if (active > 0) "$active в работе" else null
                     ).joinToString(" · "),
                     icon = Ic.sites,
-                    status = effectiveStatus(s.status, s.deadline),
+                    stage = db.stageOfSite(s.id),
                     trailing = if (s.progress > 0) "${s.progress} %" else null
                 ) { OverlayState.openCard(CardRef(Section.SITES, s.id)) }
             }
 
             Section.CONTRACTS -> items(db.liveContracts, key = { it.id }) { c ->
+                val st = shownStatus(c)
                 PanelRow(
-                    title = c.number.ifBlank { "Без номера" },
+                    title = c.label(db.site(c.siteId)?.name),
                     subtitle = listOfNotNull(
-                        db.site(c.siteId)?.name,
+                        st.label,
                         c.end.takeIf { it.isNotBlank() }?.let { "до ${dateShort(it)}" }
                     ).joinToString(" · "),
                     icon = Ic.contracts,
-                    status = effectiveStatus(c.status, c.end),
+                    stage = st.stage,
                     trailing = if (c.amount != 0L) money(c.amount) else null
                 ) { OverlayState.openCard(CardRef(Section.CONTRACTS, c.id)) }
             }
@@ -280,22 +289,19 @@ private fun ColumnScope.BrowseSheet(db: Db, host: OverlayHost) {
                         p.phone.takeIf { it.isNotBlank() }
                     ).joinToString(" · "),
                     icon = Ic.customers,
-                    status = null,
+                    stage = null,
                     trailing = db.sitesOfCustomer(p.id).size.takeIf { it > 0 }?.toString()
                 ) { OverlayState.openCard(CardRef(Section.CUSTOMERS, p.id)) }
             }
 
-            Section.CONTRACTORS -> items(db.liveContractors, key = { it.id }) { p ->
+            Section.STAFF -> items(db.liveEmployees, key = { it.id }) { e ->
                 PanelRow(
-                    title = p.name.ifBlank { "Без названия" },
-                    subtitle = listOfNotNull(
-                        p.inn.takeIf { it.isNotBlank() }?.let { "ИНН $it" },
-                        p.phone.takeIf { it.isNotBlank() }
-                    ).joinToString(" · "),
-                    icon = Ic.contractors,
-                    status = null,
+                    title = e.name.ifBlank { "Без имени" },
+                    subtitle = listOf(e.position, e.department).filter { it.isNotBlank() }.joinToString(" · "),
+                    icon = Ic.staff,
+                    stage = null,
                     trailing = null
-                ) { OverlayState.openCard(CardRef(Section.CONTRACTORS, p.id)) }
+                ) { OverlayState.openCard(CardRef(Section.STAFF, e.id)) }
             }
         }
     }
@@ -339,7 +345,7 @@ private fun PanelRow(
     title: String,
     subtitle: String,
     icon: String,
-    status: Status?,
+    stage: Stage?,
     trailing: String?,
     onClick: () -> Unit
 ) {
@@ -369,9 +375,9 @@ private fun PanelRow(
                 }
             }
             Column(horizontalAlignment = Alignment.End) {
-                status?.let { DarkStatusChip(it) }
+                stage?.let { DarkStageChip(it) }
                 trailing?.let {
-                    if (status != null) Spacer(Modifier.height(T.xs))
+                    if (stage != null) Spacer(Modifier.height(T.xs))
                     Q(it, Type.smallNum, T.text2OnDark, 1)
                 }
             }
@@ -402,8 +408,8 @@ private fun ColumnScope.CardSheet(db: Db, host: OverlayHost) {
     when (ref.section) {
         Section.SITES -> db.site(ref.id)?.let { SiteBody(it, db, host) } ?: Missing()
         Section.CONTRACTS -> db.contract(ref.id)?.let { ContractBody(it, db, host) } ?: Missing()
-        Section.CUSTOMERS -> db.customer(ref.id)?.let { PartyBody(it, db, true, host) } ?: Missing()
-        Section.CONTRACTORS -> db.contractor(ref.id)?.let { PartyBody(it, db, false, host) } ?: Missing()
+        Section.CUSTOMERS -> db.customer(ref.id)?.let { PartyBody(it, db, host) } ?: Missing()
+        Section.STAFF -> db.employee(ref.id)?.let { StaffBody(it, db, host) } ?: Missing()
     }
 }
 
@@ -420,34 +426,46 @@ private fun Missing() {
 private fun ColumnScope.SiteBody(site: Site, db: Db, host: OverlayHost) {
     val scroll = rememberScrollState()
     Column(
-        Modifier
-            .weight(1f, fill = false)
-            .verticalScroll(scroll)
-            .padding(horizontal = T.lg)
+        Modifier.weight(1f, fill = false).verticalScroll(scroll).padding(horizontal = T.lg)
     ) {
         Q(site.name.ifBlank { "Без названия" }, Type.title, T.textOnDark, 2)
-        Spacer(Modifier.height(T.sm))
-
-        val overdue = overdueText(site.deadline)
-        if (overdue != null) {
-            Q(overdue, Type.small, T.danger.fill, 1)
-            Spacer(Modifier.height(T.sm))
-        }
+        if (site.code.isNotBlank()) Q(site.code, Type.caption, T.text2OnDark, 1)
+        Spacer(Modifier.height(T.md))
 
         Facts(
             listOf(
                 "Заказчик" to (db.customer(site.customerId)?.name ?: ""),
                 "Адрес" to site.address,
-                "Срок" to (site.deadline.takeIf { it.isNotBlank() }?.let { dateShort(it) } ?: ""),
-                "Договоров" to db.contractsOfSite(site.id).size.toString()
+                "Тип" to site.buildingType,
+                "Площадь" to (if (site.area > 0) "${trimNumber(site.area)} ${site.unit}" else "")
             )
         )
 
-        Spacer(Modifier.height(T.lg))
-        QuickStatus(Status.forSite, effectiveStatus(site.status, site.deadline)) {
-            Store.setSiteStatus(site.id, it)
-            host.buzz(10)
-            host.syncQuietly()
+        // Договоры объекта — отсюда и меняется статус: у объекта его нет.
+        val contracts = db.contractsOfSite(site.id)
+        if (contracts.isNotEmpty()) {
+            Spacer(Modifier.height(T.lg))
+            Q("Договоры", Type.caption, T.text2OnDark)
+            Spacer(Modifier.height(T.sm))
+            contracts.forEach { c ->
+                Pressable({ OverlayState.openCard(CardRef(Section.CONTRACTS, c.id)) }, Modifier.fillMaxWidth()) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(T.rControl))
+                            .background(T.panelCard)
+                            .padding(T.md),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Q(c.workKind.ifBlank { c.code }, Type.small, T.textOnDark, 2)
+                            Q(shownStatus(c).label, Type.caption, shownStatus(c).stage.tone().fill, 1)
+                        }
+                        if (c.amount != 0L) Q(money(c.amount), Type.smallNum, T.text2OnDark, 1)
+                    }
+                }
+                Spacer(Modifier.height(T.xs))
+            }
         }
 
         Spacer(Modifier.height(T.lg))
@@ -470,69 +488,193 @@ private fun ColumnScope.SiteBody(site: Site, db: Db, host: OverlayHost) {
 @Composable
 private fun ColumnScope.ContractBody(c: Contract, db: Db, host: OverlayHost) {
     val scroll = rememberScrollState()
+    val status = shownStatus(c)
     Column(
-        Modifier
-            .weight(1f, fill = false)
-            .verticalScroll(scroll)
-            .padding(horizontal = T.lg)
+        Modifier.weight(1f, fill = false).verticalScroll(scroll).padding(horizontal = T.lg)
     ) {
-        Q("Договор ${c.number}".trim(), Type.title, T.textOnDark, 2)
+        Q(c.label(db.site(c.siteId)?.name), Type.title, T.textOnDark, 3)
+        if (c.code.isNotBlank()) Q(c.code, Type.caption, T.text2OnDark, 1)
         Spacer(Modifier.height(T.xs))
         if (c.amount != 0L) {
             Q(money(c.amount), Type.display, T.textOnDark, 1)
             Spacer(Modifier.height(T.sm))
         }
 
-        val overdue = overdueText(c.end)
-        if (overdue != null) {
-            Q(overdue, Type.small, T.danger.fill, 1)
+        overdueText(c.end)?.let {
+            Q(it, Type.small, T.danger.fill, 1)
             Spacer(Modifier.height(T.sm))
         }
 
         Facts(
             listOf(
                 "Объект" to (db.site(c.siteId)?.name ?: ""),
-                "Заказчик" to (db.customer(c.customerId)?.name ?: ""),
-                "Исполнитель" to (db.contractor(c.contractorId)?.name ?: ""),
+                "Отдел" to db.refs.departmentOf(c.workKind),
+                "Ответственный" to c.responsible,
                 "Срок" to (c.end.takeIf { it.isNotBlank() }?.let { dateShort(it) } ?: "")
             )
         )
 
         Spacer(Modifier.height(T.lg))
-        QuickStatus(Status.forContract, effectiveStatus(c.status, c.end)) {
+        QuickStatus(status) {
             Store.setContractStatus(c.id, it)
             host.buzz(10)
             host.syncQuietly()
         }
+
+        val pays = c.payments.filterNot { it.empty }
+        if (pays.isNotEmpty()) {
+            Spacer(Modifier.height(T.lg))
+            Q("Оплаты", Type.caption, T.text2OnDark)
+            Spacer(Modifier.height(T.sm))
+            pays.forEachIndexed { index, p ->
+                Pressable({
+                    Store.setPaymentPaid(c.id, index, !p.paid)
+                    host.buzz(8)
+                    host.syncQuietly()
+                }, Modifier.fillMaxWidth()) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(T.rControl))
+                            .background(if (p.paid) T.success.fill.copy(alpha = 0.18f) else T.panelCard)
+                            .padding(T.md),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        QIcon(
+                            if (p.paid) Ic.check else Ic.wallet,
+                            size = 18.dp,
+                            tint = if (p.paid) T.success.fill else T.text2OnDark,
+                            stroke = if (p.paid) 2f else 1.75f
+                        )
+                        Spacer(Modifier.width(T.sm))
+                        Q(p.condition, Type.small, T.textOnDark, 2, Modifier.weight(1f))
+                        Q("${trimNumber(p.share * 100)} %", Type.smallNum, T.text2OnDark, 1)
+                    }
+                }
+                Spacer(Modifier.height(T.xs))
+            }
+        }
+
         Spacer(Modifier.height(T.xl))
     }
     BottomActions(primary = Pair("Изменить договор") { host.openForm(Section.CONTRACTS, c.id) })
 }
 
 @Composable
-private fun ColumnScope.PartyBody(p: Party, db: Db, customer: Boolean, host: OverlayHost) {
+private fun ColumnScope.PartyBody(p: Party, db: Db, host: OverlayHost) {
+    val ctx = LocalContext.current
     val scroll = rememberScrollState()
     Column(
-        Modifier
-            .weight(1f, fill = false)
-            .verticalScroll(scroll)
-            .padding(horizontal = T.lg)
+        Modifier.weight(1f, fill = false).verticalScroll(scroll).padding(horizontal = T.lg)
     ) {
         Q(p.name.ifBlank { "Без названия" }, Type.title, T.textOnDark, 2)
         Spacer(Modifier.height(T.md))
+
+        if (p.phone.isNotBlank()) {
+            DarkPill(Ic.phone, "Позвонить", T.success) { Actions.dial(ctx, p.phone) }
+            Spacer(Modifier.height(T.md))
+        }
+
         Facts(
             listOf(
                 "ИНН" to p.inn,
-                "Контакт" to p.contact,
+                "Руководитель" to p.director,
                 "Телефон" to p.phone,
-                if (customer) "Объектов" to db.sitesOfCustomer(p.id).size.toString()
-                else "Договоров" to db.liveContracts.count { it.contractorId == p.id }.toString()
+                "Объектов" to db.sitesOfCustomer(p.id).size.toString()
             )
         )
         Spacer(Modifier.height(T.xl))
     }
-    val section = if (customer) Section.CUSTOMERS else Section.CONTRACTORS
-    BottomActions(primary = Pair("Изменить") { host.openForm(section, p.id) })
+    BottomActions(primary = Pair("Изменить") { host.openForm(Section.CUSTOMERS, p.id) })
+}
+
+/**
+ * Сотрудник в панели — это не анкета, а пульт: позвонить, написать,
+ * поставить задачу. Всё в один тап, не выходя из того, чем занят.
+ */
+@Composable
+private fun ColumnScope.StaffBody(e: Employee, db: Db, host: OverlayHost) {
+    val ctx = LocalContext.current
+    val scroll = rememberScrollState()
+    Column(
+        Modifier.weight(1f, fill = false).verticalScroll(scroll).padding(horizontal = T.lg)
+    ) {
+        Q(e.name.ifBlank { "Без имени" }, Type.title, T.textOnDark, 2)
+        val sub = listOf(e.position, e.department).filter { it.isNotBlank() }.joinToString(" · ")
+        if (sub.isNotBlank()) Q(sub, Type.small, T.text2OnDark, 2)
+
+        Spacer(Modifier.height(T.lg))
+
+        e.phones.forEach { phone ->
+            DarkPill(Ic.phone, phone, T.success) { Actions.dial(ctx, phone) }
+            Spacer(Modifier.height(T.sm))
+        }
+        e.chats.forEach { chat ->
+            val label = when (chat.kind) {
+                "telegram" -> "Telegram"
+                "whatsapp" -> "WhatsApp"
+                "email" -> "Почта"
+                else -> chat.kind
+            }
+            DarkPill(if (chat.kind == "email") Ic.mail else Ic.chat, label, T.accent) {
+                Actions.chat(ctx, chat)
+            }
+            Spacer(Modifier.height(T.sm))
+        }
+        if (e.phones.isEmpty() && e.chats.isEmpty()) {
+            Q("Контактов нет — добавь через «Изменить»", Type.small, T.text2OnDark)
+            Spacer(Modifier.height(T.sm))
+        }
+
+        val mine = db.liveContracts.filter { it.responsible.equals(e.name, true) }
+        if (mine.isNotEmpty()) {
+            Spacer(Modifier.height(T.md))
+            Q("Ведёт", Type.caption, T.text2OnDark)
+            Spacer(Modifier.height(T.sm))
+            mine.forEach { c ->
+                Pressable({ OverlayState.openCard(CardRef(Section.CONTRACTS, c.id)) }, Modifier.fillMaxWidth()) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(T.rControl))
+                            .background(T.panelCard)
+                            .padding(T.md),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Q(c.label(db.site(c.siteId)?.name), Type.small, T.textOnDark, 2, Modifier.weight(1f))
+                        Spacer(Modifier.width(T.sm))
+                        Q(shownStatus(c).stage.short, Type.caption, shownStatus(c).stage.tone().fill, 1)
+                    }
+                }
+                Spacer(Modifier.height(T.xs))
+            }
+        }
+
+        Spacer(Modifier.height(T.xl))
+    }
+    BottomActions(
+        primary = Pair("Поставить задачу") { host.openTask(e.id) },
+        secondary = Pair("Изменить") { host.openForm(Section.STAFF, e.id) }
+    )
+}
+
+@Composable
+private fun DarkPill(icon: String, label: String, tone: T.Tone, onClick: () -> Unit) {
+    Pressable(onClick, Modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = T.touchMin)
+                .clip(RoundedCornerShape(T.rControl))
+                .background(tone.fill.copy(alpha = 0.18f))
+                .padding(horizontal = T.md),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            QIcon(icon, size = 18.dp, tint = tone.fill, stroke = 2f)
+            Spacer(Modifier.width(T.sm))
+            Q(label, Type.small, T.textOnDark, 1)
+        }
+    }
 }
 
 // --- детали --------------------------------------------------------------
@@ -549,27 +691,53 @@ private fun Facts(pairs: List<Pair<String, String>>) {
     }
 }
 
-/** Смена статуса — один тап, без формы и без сохранения. */
+/**
+ * Смена статуса в два тапа: стадия, потом статус внутри неё.
+ * Сорок один статус одной лентой не читается, а стадий шесть.
+ */
 @Composable
-private fun QuickStatus(options: List<Status>, current: Status, onPick: (Status) -> Unit) {
+private fun QuickStatus(current: Status, onPick: (Status) -> Unit) {
+    var stage by remember(current) { mutableStateOf(current.stage) }
+
     Q("Статус", Type.caption, T.text2OnDark)
     Spacer(Modifier.height(T.sm))
     Row(
         Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(T.sm)
     ) {
-        options.forEach { s ->
-            val selected = s == current
-            Pressable({ if (!selected) onPick(s) }) {
+        Stage.entries.forEach { st ->
+            val on = st == stage
+            Pressable({ stage = st }) {
                 Box(
                     Modifier
-                        .heightIn(min = 40.dp)
+                        .heightIn(min = 38.dp)
                         .clip(RoundedCornerShape(percent = 50))
-                        .background(if (selected) s.tone().fill else Color.White.copy(alpha = 0.07f))
+                        .background(if (on) st.tone().fill else Color.White.copy(alpha = 0.07f))
                         .padding(horizontal = T.md),
                     contentAlignment = Alignment.Center
                 ) {
-                    Q(s.label, Type.caption, if (selected) Color.White else T.text2OnDark, 1)
+                    Q(st.short, Type.caption, if (on) Color.White else T.text2OnDark, 1)
+                }
+            }
+        }
+    }
+
+    Spacer(Modifier.height(T.sm))
+    Column(verticalArrangement = Arrangement.spacedBy(T.xs)) {
+        Status.byStage(stage).forEach { s ->
+            val on = s == current
+            Pressable({ if (!on) onPick(s) }, Modifier.fillMaxWidth()) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = T.touchMin)
+                        .clip(RoundedCornerShape(T.rControl))
+                        .background(if (on) s.stage.tone().fill.copy(alpha = 0.22f) else T.panelCard)
+                        .padding(horizontal = T.md, vertical = T.sm),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Q(s.label, Type.small, if (on) s.stage.tone().fill else T.textOnDark, 2, Modifier.weight(1f))
+                    if (on) QIcon(Ic.check, size = 18.dp, tint = s.stage.tone().fill, stroke = 2f)
                 }
             }
         }
@@ -671,26 +839,13 @@ private fun RoundAction(icon: String, label: String, accent: Boolean = false, on
 }
 
 @Composable
-private fun DarkStatusChip(status: Status) {
+private fun DarkStageChip(stage: Stage) {
     Box(
         Modifier
             .clip(RoundedCornerShape(percent = 50))
-            .background(status.tone().fill.copy(alpha = 0.22f))
+            .background(stage.tone().fill.copy(alpha = 0.22f))
             .padding(horizontal = 8.dp, vertical = 3.dp)
     ) {
-        Q(status.label, Type.caption, status.tone().fill, 1)
+        Q(stage.short, Type.caption, stage.tone().fill, 1)
     }
-}
-
-/** Просрочка выставляется сама: держать её руками в статусе невозможно. */
-private fun effectiveStatus(status: Status, deadline: String): Status =
-    if (status == Status.WORK && overdueText(deadline) != null) Status.OVERDUE else status
-
-private fun Status.tone(): T.Tone = when (this) {
-    Status.DRAFT -> T.muted
-    Status.WORK -> T.accent
-    Status.WAIT -> T.warning
-    Status.DONE -> T.success
-    Status.OVERDUE -> T.danger
-    Status.ARCHIVE -> T.muted
 }

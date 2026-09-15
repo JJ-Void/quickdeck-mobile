@@ -7,8 +7,8 @@ import androidx.core.content.FileProvider
 import java.io.File
 
 /**
- * Выгрузка «на всякий случай»: CSV на раздел плюс полная копия в JSON.
- * Обмен с таблицей живёт отдельно, в [Sync] — это разные задачи.
+ * Выгрузка в таблицы: CSV на раздел плюс полная копия.
+ * Обмен с Google-таблицей живёт отдельно, в [Sync] — это разные задачи.
  */
 object Export {
 
@@ -23,31 +23,37 @@ object Export {
         val out = LinkedHashMap<String, String>()
 
         out["Заказчики.csv"] = rows(
-            "Наименование;ИНН;Контакт;Телефон;Примечание",
-            db.liveCustomers.map { listOf(it.name, it.inn, it.contact, it.phone, it.note) }
+            "Наименование;Полное;ИНН;КПП;ОГРН;Руководитель;Телефон;E-mail;Банк;БИК;Счёт",
+            db.liveCustomers.map {
+                listOf(it.name, it.fullName, it.inn, it.kpp, it.ogrn, it.director, it.phone, it.email, it.bank, it.bik, it.account)
+            }
         )
-        out["Исполнители.csv"] = rows(
-            "Наименование;ИНН;Контакт;Телефон;Примечание",
-            db.liveContractors.map { listOf(it.name, it.inn, it.contact, it.phone, it.note) }
+        out["Сотрудники.csv"] = rows(
+            "Ф. И. О.;Отдел;Должность;Таб. №;Телефоны;Чаты;Комментарий",
+            db.liveEmployees.map { e ->
+                listOf(
+                    e.name, e.department, e.position, e.tabNumber,
+                    e.phones.joinToString(", "),
+                    e.chats.joinToString(", ") { "${it.kind}: ${it.handle}" },
+                    e.note
+                )
+            }
         )
         out["Объекты.csv"] = rows(
-            "Объект;Адрес;Заказчик;Статус;Срок;Готовность,%;Примечание",
+            "Объект;Полное;Заказчик;Адрес;Тип здания;Площадь;Ед. изм.;Комментарий",
             db.liveSites.map { s ->
                 listOf(
-                    s.name, s.address, db.customer(s.customerId)?.name ?: "",
-                    s.status.label, dateInput(s.deadline), s.progress.toString(), s.note
+                    s.name, s.fullName, db.customer(s.customerId)?.name ?: "", s.address,
+                    s.buildingType, if (s.area == 0.0) "" else s.area.toString(), s.unit, s.note
                 )
             }
         )
         out["Договоры.csv"] = rows(
-            "Номер;Объект;Заказчик;Исполнитель;Сумма;Статус;Начало;Срок;Примечание",
+            "Объект;Вид работы;Юр. лицо;Статус;Цена;Начало;Срок;Ответственный;Комментарий",
             db.liveContracts.map { c ->
                 listOf(
-                    c.number, db.site(c.siteId)?.name ?: "",
-                    db.customer(c.customerId)?.name ?: "",
-                    db.contractor(c.contractorId)?.name ?: "",
-                    c.amount.toString(), c.status.label,
-                    dateInput(c.start), dateInput(c.end), c.note
+                    db.site(c.siteId)?.name ?: "", c.workKind, c.legalEntity, c.status.label,
+                    c.amount.toString(), dateInput(c.start), dateInput(c.end), c.responsible, c.note
                 )
             }
         )
@@ -66,7 +72,7 @@ object Export {
             f.writeText("﻿" + text)
             files += FileProvider.getUriForFile(ctx, auth, f)
         }
-        val backup = File(dir, "quickdeck.json").apply { writeText(Store.raw()) }
+        val backup = File(dir, Backup.suggestedName()).apply { writeText(Backup.make()) }
         files += FileProvider.getUriForFile(ctx, auth, backup)
 
         val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {

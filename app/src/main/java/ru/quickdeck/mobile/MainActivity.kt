@@ -12,7 +12,16 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -24,7 +33,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -35,11 +46,16 @@ import ru.quickdeck.mobile.overlay.BubbleService
 import ru.quickdeck.mobile.ui.*
 
 class MainActivity : ComponentActivity() {
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Store.init(this)
         setContent { AppRoot() }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Тихий срез при уходе из приложения: данные живут только здесь.
+        Backup.auto(this)
     }
 }
 
@@ -48,7 +64,6 @@ private sealed interface Screen {
     data class SectionList(val section: Section) : Screen
     data class Card(val section: Section, val id: String) : Screen
     data class Form(val section: Section, val id: String?) : Screen
-    data class Pick(val request: PickRequest, val stamp: Long) : Screen
 }
 
 @Composable
@@ -57,10 +72,12 @@ private fun AppRoot() {
     val scope = rememberCoroutineScope()
     val stack = remember { mutableStateListOf<Screen>(Screen.Home) }
 
+    // Выбор — слой поверх экрана, а не отдельный экран в стеке. Иначе форма
+    // уходит из композиции и теряет всё набранное.
+    var pick by remember { mutableStateOf<PickRequest?>(null) }
+
     fun push(s: Screen) = stack.add(s)
-    fun pop() {
-        if (stack.size > 1) stack.removeAt(stack.size - 1)
-    }
+    fun pop() { if (stack.size > 1) stack.removeAt(stack.size - 1) }
 
     fun afterSave() {
         if (Store.autoSync && Store.syncConfigured) {
@@ -69,59 +86,219 @@ private fun AppRoot() {
         pop()
     }
 
-    BackHandler(enabled = stack.size > 1) { pop() }
+    BackHandler(enabled = pick != null || stack.size > 1) {
+        if (pick != null) pick = null else pop()
+    }
+
+    Box(Modifier.fillMaxSize().background(T.bg)) {
+        Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars)) {
+            when (val s = stack.last()) {
+                Screen.Home -> HomeScreen(db) { push(it) }
+
+                is Screen.SectionList -> SectionScreen(
+                    section = s.section,
+                    db = db,
+                    onBack = { pop() },
+                    onOpen = { push(it) },
+                    onCreate = { push(Screen.Form(s.section, null)) }
+                )
+
+                is Screen.Card -> CardScreen(
+                    section = s.section,
+                    id = s.id,
+                    db = db,
+                    onBack = { pop() },
+                    onOpen = { push(it) }
+                )
+
+                is Screen.Form -> FormScreen(
+                    section = s.section,
+                    id = s.id,
+                    db = db,
+                    onPick = { pick = it },
+                    onSaved = { afterSave() },
+                    onCancel = { pop() },
+                    onDeleted = {
+                        while (stack.size > 1 && stack.last() !is Screen.SectionList) {
+                            stack.removeAt(stack.size - 1)
+                        }
+                        if (Store.autoSync && Store.syncConfigured) {
+                            scope.launch { withContext(Dispatchers.IO) { Sync.run() } }
+                        }
+                    }
+                )
+            }
+        }
+
+        pick?.let { request -> PickLayer(request, db) { pick = null } }
+    }
+}
+
+// --- выбор поверх экрана -------------------------------------------------
+
+@Composable
+private fun BoxScope.PickLayer(request: PickRequest, db: Db, onClose: () -> Unit) {
+    val appear = remember { MutableTransitionState(false).apply { targetState = true } }
+    val maxH = (LocalConfiguration.current.screenHeightDp * 0.8f).dp
 
     Box(
         Modifier
-            .fillMaxSize()
-            .background(T.bg)
-            .windowInsetsPadding(WindowInsets.systemBars)
-    ) {
-        when (val s = stack.last()) {
-            Screen.Home -> HomeScreen(db) { push(it) }
-
-            is Screen.SectionList -> SectionScreen(
-                section = s.section,
-                db = db,
-                onBack = { pop() },
-                onOpen = { push(it) },
-                onCreate = { push(Screen.Form(s.section, null)) }
+            .matchParentSize()
+            .background(T.scrim)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClose
             )
+    )
 
-            is Screen.Card -> CardScreen(
-                section = s.section,
-                id = s.id,
-                db = db,
-                onBack = { pop() },
-                onEdit = { push(Screen.Form(s.section, s.id)) },
-                onAddContract = { push(Screen.Form(Section.CONTRACTS, null)) }
-            )
-
-            is Screen.Form -> FormScreen(
-                section = s.section,
-                id = s.id,
-                db = db,
-                onPick = { push(Screen.Pick(it, System.currentTimeMillis())) },
-                onSaved = { afterSave() },
-                onCancel = { pop() },
-                onDeleted = {
-                    // после удаления возвращаемся мимо карточки — её больше нет
-                    while (stack.size > 1 && stack.last() !is Screen.SectionList) {
-                        stack.removeAt(stack.size - 1)
-                    }
-                    if (Store.autoSync && Store.syncConfigured) {
-                        scope.launch { withContext(Dispatchers.IO) { Sync.run() } }
+    Box(Modifier.matchParentSize(), contentAlignment = Alignment.BottomCenter) {
+        AnimatedVisibility(
+            visibleState = appear,
+            enter = slideInVertically(tween(T.MS_SCREEN, easing = T.curve)) { it } +
+                fadeIn(tween(T.MS_STATE, easing = T.curve)),
+            exit = slideOutVertically(tween(T.MS_EXIT, easing = T.curve)) { it } +
+                fadeOut(tween(T.MS_EXIT, easing = T.curve))
+        ) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = maxH)
+                    .clip(RoundedCornerShape(topStart = T.rSheet, topEnd = T.rSheet))
+                    .background(T.bg)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { }
+                    .windowInsetsPadding(WindowInsets.navigationBars)
+                    .imePadding()
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(start = T.lg, end = T.sm, top = T.lg),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Q(request.title, Type.title, T.text, 1, Modifier.weight(1f))
+                    Pressable(onClose) {
+                        Box(Modifier.size(T.touchMin), contentAlignment = Alignment.Center) {
+                            QIcon(Ic.close, size = 20.dp, tint = T.text2)
+                        }
                     }
                 }
-            )
-
-            is Screen.Pick -> PickScreen(
-                request = s.request,
-                db = db,
-                onDone = { pop() },
-                onCreate = { section -> push(Screen.Form(section, null)) }
-            )
+                Spacer(Modifier.height(T.sm))
+                PickBody(request, db, onClose)
+            }
         }
+    }
+}
+
+@Composable
+private fun ColumnScope.PickBody(request: PickRequest, db: Db, onClose: () -> Unit) {
+    when (request) {
+        is PickRequest.Values -> LazyColumn(
+            Modifier.weight(1f, fill = false),
+            contentPadding = PaddingValues(start = T.lg, end = T.lg, bottom = T.lg),
+            verticalArrangement = Arrangement.spacedBy(T.xs)
+        ) {
+            items(request.options) { option ->
+                val on = option.equals(request.current, true)
+                Pressable({ request.onPick(option); onClose() }, Modifier.fillMaxWidth()) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = T.touchMin)
+                            .clip(RoundedCornerShape(T.rControl))
+                            .background(if (on) T.accent.chip else T.surface)
+                            .padding(horizontal = T.md, vertical = T.sm),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Q(option, Type.body, if (on) T.accent.ink else T.text, 2, Modifier.weight(1f))
+                        if (on) QIcon(Ic.check, size = 18.dp, tint = T.accent.ink, stroke = 2f)
+                    }
+                }
+            }
+        }
+
+        is PickRequest.CustomerPick -> QuickList(
+            rows = { onDone ->
+                db.liveCustomers.forEach { p ->
+                    PartyRow(p, p.inn.takeIf { it.isNotBlank() }?.let { "ИНН $it" }, Ic.customers) {
+                        request.onPick(p); onDone()
+                    }
+                    Spacer(Modifier.height(T.sm))
+                }
+            },
+            label = "Новый заказчик",
+            onCreate = { name ->
+                val made = Party(name = name)
+                Store.upsertCustomer(made)
+                request.onPick(made)
+            },
+            onClose = onClose
+        )
+
+        is PickRequest.EmployeePick -> QuickList(
+            rows = { onDone ->
+                db.liveEmployees.forEach { e ->
+                    EmployeeRow(e) { request.onPick(e); onDone() }
+                    Spacer(Modifier.height(T.sm))
+                }
+            },
+            label = "Новый сотрудник",
+            onCreate = { name ->
+                val made = Employee(name = name)
+                Store.upsertEmployee(made)
+                request.onPick(made)
+            },
+            onClose = onClose
+        )
+
+        is PickRequest.SitePick -> QuickList(
+            rows = { onDone ->
+                db.liveSites.forEach { s ->
+                    SiteRow(s, db) { request.onPick(s); onDone() }
+                    Spacer(Modifier.height(T.sm))
+                }
+            },
+            label = "Новый объект",
+            onCreate = { name ->
+                val made = Site(name = name)
+                Store.upsertSite(made)
+                request.onPick(made)
+            },
+            onClose = onClose
+        )
+    }
+}
+
+/**
+ * Список с возможностью завести запись прямо здесь, одним названием.
+ * Уход на вторую форму выгрузил бы первую вместе со всем набранным.
+ */
+@Composable
+private fun ColumnScope.QuickList(
+    rows: @Composable ColumnScope.(onDone: () -> Unit) -> Unit,
+    label: String,
+    onCreate: (String) -> Unit,
+    onClose: () -> Unit
+) {
+    var fresh by remember { mutableStateOf("") }
+
+    Column(
+        Modifier
+            .weight(1f, fill = false)
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = T.lg)
+    ) {
+        rows(onClose)
+    }
+
+    Column(Modifier.padding(T.lg)) {
+        Field(label, fresh, { fresh = it }, placeholder = "Название")
+        Spacer(Modifier.height(T.sm))
+        PrimaryButton("Создать и выбрать", {
+            onCreate(fresh.trim())
+            onClose()
+        }, enabled = fresh.isNotBlank())
     }
 }
 
@@ -135,8 +312,10 @@ private fun HomeScreen(db: Db, onOpen: (Screen) -> Unit) {
     var bubbleOn by remember { mutableStateOf(Store.bubbleEnabled) }
     var url by remember { mutableStateOf(Store.sheetsUrl) }
     var auto by remember { mutableStateOf(Store.autoSync) }
+    var greeting by remember { mutableStateOf(Store.greeting) }
     var syncing by remember { mutableStateOf(false) }
     var lastSync by remember { mutableStateOf(Store.lastSync) }
+    var lastBackup by remember { mutableStateOf(Store.lastBackup) }
     var granted by remember { mutableStateOf(BubbleService.canDraw(ctx)) }
 
     val notifLauncher = rememberLauncherForActivityResult(
@@ -150,79 +329,46 @@ private fun HomeScreen(db: Db, onOpen: (Screen) -> Unit) {
         if (granted && bubbleOn) BubbleService.start(ctx)
     }
 
+    val saveLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val result = Backup.write(ctx, uri)
+        lastBackup = Store.lastBackup
+        Toast.makeText(
+            ctx,
+            result.fold({ "Копия сохранена" }, { "Не вышло: ${it.message}" }),
+            Toast.LENGTH_LONG
+        ).show()
+    }
+
+    val openLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val result = Backup.read(ctx, uri)
+        Toast.makeText(
+            ctx,
+            result.fold({ "Восстановлено записей: $it" }, { "Не вышло: ${it.message}" }),
+            Toast.LENGTH_LONG
+        ).show()
+    }
+
     fun askOverlay() {
         overlayLauncher.launch(
-            Intent(
-                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                Uri.parse("package:${ctx.packageName}")
-            )
+            Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${ctx.packageName}"))
         )
     }
 
     Column(
-        Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = T.lg)
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = T.lg)
     ) {
         Spacer(Modifier.height(T.lg))
-        Q("QuickDeck", Type.title, T.text)
-        Q("Реестр под большой палец", Type.small, T.text2)
+        Q("Подряд", Type.title, T.text)
+        Q("Объекты, договоры и люди под большой палец", Type.small, T.text2)
         Spacer(Modifier.height(T.xl))
 
-        // --- пузырь -------------------------------------------------------
-        Panel {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Q("Пузырь поверх приложений", Type.heading, T.text)
-                    Q(
-                        if (bubbleOn) "Висит поверх всего, таскается пальцем" else "Выключен",
-                        Type.small, T.text2
-                    )
-                }
-                Toggle(bubbleOn) { value ->
-                    if (value && !BubbleService.canDraw(ctx)) {
-                        askOverlay()
-                        return@Toggle
-                    }
-                    bubbleOn = value
-                    Store.bubbleEnabled = value
-                    if (value) {
-                        if (Build.VERSION.SDK_INT >= 33) {
-                            notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                        }
-                        BubbleService.start(ctx)
-                    } else {
-                        BubbleService.stop(ctx)
-                    }
-                }
-            }
-
-            if (!granted) {
-                Spacer(Modifier.height(T.md))
-                Q(
-                    "Нужно разрешение «Поверх других приложений» — без него пузыря не будет.",
-                    Type.small, T.warning.ink
-                )
-                Spacer(Modifier.height(T.sm))
-                GhostButton("Дать разрешение", { askOverlay() }, Modifier.fillMaxWidth())
-            }
-
-            Spacer(Modifier.height(T.lg))
-            Hairline()
-            Spacer(Modifier.height(T.md))
-            Q("Как им пользоваться", Type.caption, T.text3)
-            Spacer(Modifier.height(T.sm))
-            Gesture("Тап", "открыть список последнего раздела")
-            Gesture("Потянуть в сторону", "колесо разделов; отпустил — открылся")
-            Gesture("Потянуть дальше", "вместо открытия — сразу новая запись")
-            Gesture("Долгое нажатие", "пузырь отрывается, тащи куда удобно")
-        }
-
-        Spacer(Modifier.height(T.xl))
-        Q("Разделы", Type.caption, T.text3)
-        Spacer(Modifier.height(T.sm))
-
+        // --- разделы ------------------------------------------------------
         Section.entries.forEach { s ->
             Pressable({ onOpen(Screen.SectionList(s)) }, Modifier.fillMaxWidth()) {
                 Row(
@@ -244,19 +390,76 @@ private fun HomeScreen(db: Db, onOpen: (Screen) -> Unit) {
             Spacer(Modifier.height(T.md))
         }
 
-        // --- таблица ------------------------------------------------------
+        // --- пузырь -------------------------------------------------------
         Spacer(Modifier.height(T.lg))
+        Q("Пузырь поверх приложений", Type.caption, T.text3)
+        Spacer(Modifier.height(T.sm))
+        Panel {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Q("Быстрый доступ", Type.heading, T.text)
+                    Q(
+                        if (bubbleOn) "Висит поверх всего, таскается пальцем" else "Выключен",
+                        Type.small, T.text2
+                    )
+                }
+                Toggle(bubbleOn) { value ->
+                    if (value && !BubbleService.canDraw(ctx)) { askOverlay(); return@Toggle }
+                    bubbleOn = value
+                    Store.bubbleEnabled = value
+                    if (value) {
+                        if (Build.VERSION.SDK_INT >= 33) notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        BubbleService.start(ctx)
+                    } else BubbleService.stop(ctx)
+                }
+            }
+
+            if (!granted) {
+                Spacer(Modifier.height(T.md))
+                Q("Нужно разрешение «Поверх других приложений».", Type.small, T.warning.ink)
+                Spacer(Modifier.height(T.sm))
+                GhostButton("Дать разрешение", { askOverlay() }, Modifier.fillMaxWidth())
+            }
+
+            Spacer(Modifier.height(T.lg))
+            Hairline()
+            Spacer(Modifier.height(T.md))
+            Gesture("Тап", "список последнего раздела")
+            Gesture("Потянуть", "колесо разделов")
+            Gesture("Потянуть дальше", "сразу новая запись")
+            Gesture("Долгое нажатие", "пузырь отрывается")
+        }
+
+        // --- сообщения ----------------------------------------------------
+        Spacer(Modifier.height(T.xl))
+        Q("Сообщения сотрудникам", Type.caption, T.text3)
+        Spacer(Modifier.height(T.sm))
+        Panel {
+            Field(
+                "Обращение", greeting, { greeting = it; Store.greeting = it },
+                placeholder = "{Имя}, — или оставь пустым",
+                hint = "Подставляется в начало задачи. Пусто — без обращения."
+            )
+            Spacer(Modifier.height(T.md))
+            GhostButton(
+                "Шаблоны сообщений (${db.templates.size})",
+                { ctx.startActivity(SheetActivity.templates(ctx)) },
+                Modifier.fillMaxWidth()
+            )
+        }
+
+        // --- таблица ------------------------------------------------------
+        Spacer(Modifier.height(T.xl))
         Q("Google-таблица", Type.caption, T.text3)
         Spacer(Modifier.height(T.sm))
         Panel {
             Q(
-                "Связь двусторонняя: правки из телефона уезжают в таблицу, правки в таблице приезжают обратно. Спорные случаи решаются по времени правки.",
+                "Связь двусторонняя: правки из телефона уезжают в таблицу, правки в таблице приезжают обратно. Спор решается по времени правки.",
                 Type.small, T.text2
             )
             Spacer(Modifier.height(T.md))
             Field(
-                "Ссылка веб-приложения Apps Script",
-                url,
+                "Ссылка веб-приложения Apps Script", url,
                 { url = it; Store.sheetsUrl = it.trim() },
                 placeholder = "https://script.google.com/macros/s/.../exec"
             )
@@ -264,7 +467,7 @@ private fun HomeScreen(db: Db, onOpen: (Screen) -> Unit) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Q("Обмениваться самому", Type.small, T.text)
-                    Q("после каждой правки и при открытии пузыря", Type.caption, T.text3)
+                    Q("после правки и при открытии пузыря", Type.caption, T.text3)
                 }
                 Toggle(auto) { auto = it; Store.autoSync = it }
             }
@@ -294,8 +497,31 @@ private fun HomeScreen(db: Db, onOpen: (Screen) -> Unit) {
                 Spacer(Modifier.height(T.sm))
                 Q("Последний обмен: $lastSync", Type.caption, T.text3)
             }
+        }
+
+        // --- копия --------------------------------------------------------
+        Spacer(Modifier.height(T.xl))
+        Q("Резервная копия", Type.caption, T.text3)
+        Spacer(Modifier.height(T.sm))
+        Panel {
+            Q(
+                "Реестр хранится на телефоне. Копия — единственный способ не потерять его вместе с устройством.",
+                Type.small, T.text2
+            )
+            Spacer(Modifier.height(T.md))
+            PrimaryButton("Создать копию", { saveLauncher.launch(Backup.suggestedName()) })
             Spacer(Modifier.height(T.sm))
-            GhostButton("Выгрузить CSV и копию", { Export.share(ctx) }, Modifier.fillMaxWidth())
+            GhostButton(
+                "Восстановить из копии",
+                { openLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
+                Modifier.fillMaxWidth()
+            )
+            if (lastBackup.isNotBlank()) {
+                Spacer(Modifier.height(T.sm))
+                Q("Последняя копия: $lastBackup", Type.caption, T.text3)
+            }
+            Spacer(Modifier.height(T.sm))
+            GhostButton("Выгрузить CSV", { Export.share(ctx) }, Modifier.fillMaxWidth())
         }
 
         Spacer(Modifier.height(T.xxl))
@@ -305,11 +531,7 @@ private fun HomeScreen(db: Db, onOpen: (Screen) -> Unit) {
 @Composable
 private fun Panel(content: @Composable ColumnScope.() -> Unit) {
     Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(T.rCard))
-            .background(T.surface)
-            .padding(T.lg),
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(T.rCard)).background(T.surface).padding(T.lg),
         content = content
     )
 }
@@ -362,10 +584,7 @@ private fun SectionScreen(
             Q(section.title, Type.title, T.text, 1, Modifier.weight(1f))
             Pressable(onCreate) {
                 Box(
-                    Modifier
-                        .size(T.touchMin)
-                        .clip(RoundedCornerShape(percent = 50))
-                        .background(T.accent.fill),
+                    Modifier.size(T.touchMin).clip(RoundedCornerShape(percent = 50)).background(T.accent.fill),
                     contentAlignment = Alignment.Center
                 ) { QIcon(Ic.plus, size = 22.dp, tint = Color.White, stroke = 2f) }
             }
@@ -401,10 +620,8 @@ private fun SectionScreen(
                     }
                 }
 
-                Section.CONTRACTORS -> items(db.liveContractors, key = { it.id }) { p ->
-                    PartyRow(p, p.inn.takeIf { it.isNotBlank() }?.let { "ИНН $it" }, Ic.contractors) {
-                        onOpen(Screen.Card(Section.CONTRACTORS, p.id))
-                    }
+                Section.STAFF -> items(db.liveEmployees, key = { it.id }) { e ->
+                    EmployeeRow(e) { onOpen(Screen.Card(Section.STAFF, e.id)) }
                 }
             }
         }
@@ -419,14 +636,14 @@ private fun CardScreen(
     id: String,
     db: Db,
     onBack: () -> Unit,
-    onEdit: () -> Unit,
-    onAddContract: () -> Unit
+    onOpen: (Screen) -> Unit
 ) {
+    val ctx = LocalContext.current
     val title = when (section) {
         Section.SITES -> db.site(id)?.name
-        Section.CONTRACTS -> db.contract(id)?.let { "Договор ${it.number}" }
+        Section.CONTRACTS -> db.contract(id)?.code
         Section.CUSTOMERS -> db.customer(id)?.name
-        Section.CONTRACTORS -> db.contractor(id)?.name
+        Section.STAFF -> db.employee(id)?.name
     } ?: section.one
 
     Column(Modifier.fillMaxSize()) {
@@ -439,10 +656,34 @@ private fun CardScreen(
         }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
             when (section) {
-                Section.SITES -> db.site(id)?.let { SiteCard(it, db, onEdit, onAddContract) }
-                Section.CONTRACTS -> db.contract(id)?.let { ContractCard(it, db, onEdit) }
-                Section.CUSTOMERS -> db.customer(id)?.let { PartyCard(it, db, true, onEdit) }
-                Section.CONTRACTORS -> db.contractor(id)?.let { PartyCard(it, db, false, onEdit) }
+                Section.SITES -> db.site(id)?.let { site ->
+                    SiteCard(
+                        site, db,
+                        onEdit = { onOpen(Screen.Form(Section.SITES, id)) },
+                        onAddContract = { onOpen(Screen.Form(Section.CONTRACTS, null)) },
+                        onOpenContract = { onOpen(Screen.Card(Section.CONTRACTS, it)) }
+                    )
+                }
+
+                Section.CONTRACTS -> db.contract(id)?.let {
+                    ContractCard(it, db, onEdit = { onOpen(Screen.Form(Section.CONTRACTS, id)) })
+                }
+
+                Section.CUSTOMERS -> db.customer(id)?.let {
+                    PartyCard(
+                        it, db,
+                        onEdit = { onOpen(Screen.Form(Section.CUSTOMERS, id)) },
+                        onOpenSite = { onOpen(Screen.Card(Section.SITES, it)) }
+                    )
+                }
+
+                Section.STAFF -> db.employee(id)?.let { e ->
+                    EmployeeCard(
+                        e, db,
+                        onEdit = { onOpen(Screen.Form(Section.STAFF, id)) },
+                        onTask = { ctx.startActivity(SheetActivity.task(ctx, e.id)) }
+                    )
+                }
             }
         }
     }
@@ -460,92 +701,51 @@ private fun FormScreen(
     onCancel: () -> Unit,
     onDeleted: () -> Unit
 ) {
-    val canDelete = id != null
+    // Заготовка создаётся один раз: Site() и Party() выдают новый
+    // идентификатор при каждом вызове, и ключ состояния менялся бы
+    // на каждой перерисовке, стирая всё набранное.
+    val key = section to id
     when (section) {
-        Section.SITES -> SiteForm(
-            initial = db.site(id) ?: Site(),
-            db = db,
-            onPick = onPick,
-            onDone = { Store.upsertSite(it); onSaved() },
-            onCancel = onCancel,
-            onDelete = if (canDelete) ({ Store.deleteSite(id!!); onDeleted() }) else null
-        )
-
-        Section.CONTRACTS -> ContractForm(
-            initial = db.contract(id) ?: Contract(),
-            db = db,
-            onPick = onPick,
-            onDone = { Store.upsertContract(it); onSaved() },
-            onCancel = onCancel,
-            onDelete = if (canDelete) ({ Store.deleteContract(id!!); onDeleted() }) else null
-        )
-
-        Section.CUSTOMERS -> PartyForm(
-            initial = db.customer(id) ?: Party(),
-            title = if (id == null) "Новый заказчик" else "Заказчик",
-            onDone = { Store.upsertCustomer(it); onSaved() },
-            onCancel = onCancel,
-            onDelete = if (canDelete) ({ Store.deleteCustomer(id!!); onDeleted() }) else null
-        )
-
-        Section.CONTRACTORS -> PartyForm(
-            initial = db.contractor(id) ?: Party(),
-            title = if (id == null) "Новый исполнитель" else "Исполнитель",
-            onDone = { Store.upsertContractor(it); onSaved() },
-            onCancel = onCancel,
-            onDelete = if (canDelete) ({ Store.deleteContractor(id!!); onDeleted() }) else null
-        )
-    }
-}
-
-// --- выбор ---------------------------------------------------------------
-
-@Composable
-private fun PickScreen(
-    request: PickRequest,
-    db: Db,
-    onDone: () -> Unit,
-    onCreate: (Section) -> Unit
-) {
-    val section = when (request) {
-        is PickRequest.Customer -> Section.CUSTOMERS
-        is PickRequest.Contractor -> Section.CONTRACTORS
-        is PickRequest.SitePick -> Section.SITES
-    }
-
-    Column(Modifier.fillMaxSize().padding(horizontal = T.lg)) {
-        Spacer(Modifier.height(T.lg))
-        Q("Выбери ${section.one.lowercase()}", Type.title, T.text)
-        Spacer(Modifier.height(T.lg))
-
-        if (db.count(section) == 0) {
-            EmptyState(
-                text = "Здесь пока пусто",
-                hint = "Сначала заведи запись — потом она появится в выборе.",
-                action = "Создать",
-                onAction = { onCreate(section) }
+        Section.SITES -> {
+            val initial = remember(key) { db.site(id) ?: Site() }
+            SiteForm(
+                initial = initial, db = db, onPick = onPick,
+                onDone = { Store.upsertSite(it); onSaved() },
+                onCancel = onCancel,
+                onDelete = if (id != null) ({ Store.deleteSite(id); onDeleted() }) else null
             )
-        } else {
-            LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(T.md)) {
-                when (request) {
-                    is PickRequest.Customer -> items(db.liveCustomers, key = { it.id }) { p ->
-                        PartyRow(p, null, Ic.customers) { request.onPick(p); onDone() }
-                    }
-
-                    is PickRequest.Contractor -> items(db.liveContractors, key = { it.id }) { p ->
-                        PartyRow(p, null, Ic.contractors) { request.onPick(p); onDone() }
-                    }
-
-                    is PickRequest.SitePick -> items(db.liveSites, key = { it.id }) { s ->
-                        SiteRow(s, db) { request.onPick(s); onDone() }
-                    }
-                }
-            }
         }
 
-        Spacer(Modifier.height(T.md))
-        GhostButton("Отмена", onDone, Modifier.fillMaxWidth())
-        Spacer(Modifier.height(T.lg))
+        Section.CONTRACTS -> {
+            val initial = remember(key) { db.contract(id) ?: Contract() }
+            ContractForm(
+                initial = initial, db = db, onPick = onPick,
+                onDone = { Store.upsertContract(it); onSaved() },
+                onCancel = onCancel,
+                onDelete = if (id != null) ({ Store.deleteContract(id); onDeleted() }) else null
+            )
+        }
+
+        Section.CUSTOMERS -> {
+            val initial = remember(key) { db.customer(id) ?: Party() }
+            PartyForm(
+                initial = initial,
+                title = if (id == null) "Новый заказчик" else "Заказчик",
+                onDone = { Store.upsertCustomer(it); onSaved() },
+                onCancel = onCancel,
+                onDelete = if (id != null) ({ Store.deleteCustomer(id); onDeleted() }) else null
+            )
+        }
+
+        Section.STAFF -> {
+            val initial = remember(key) { db.employee(id) ?: Employee() }
+            EmployeeForm(
+                initial = initial, db = db, onPick = onPick,
+                onDone = { Store.upsertEmployee(it); onSaved() },
+                onCancel = onCancel,
+                onDelete = if (id != null) ({ Store.deleteEmployee(id); onDeleted() }) else null
+            )
+        }
     }
 }
 
@@ -562,5 +762,5 @@ private fun sectionIcon(s: Section): String = when (s) {
     Section.SITES -> Ic.sites
     Section.CONTRACTS -> Ic.contracts
     Section.CUSTOMERS -> Ic.customers
-    Section.CONTRACTORS -> Ic.contractors
+    Section.STAFF -> Ic.staff
 }

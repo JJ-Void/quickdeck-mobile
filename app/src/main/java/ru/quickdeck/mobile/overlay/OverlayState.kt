@@ -52,6 +52,9 @@ interface OverlayHost {
     /** Поиск по реестру — тоже Activity, потому что там нужна клавиатура. */
     fun openSearch()
 
+    /** Постановка задачи сотруднику — Activity, там ввод и отправка. */
+    fun openTask(employeeId: String)
+
     fun buzz(ms: Long)
 
     /** Сходить в таблицу молча, не мешая человеку. */

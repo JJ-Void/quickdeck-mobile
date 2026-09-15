@@ -16,13 +16,14 @@ import java.time.format.DateTimeFormatter
 /**
  * Обмен с Google-таблицей в обе стороны.
  *
- * Как это устроено. Телефон отправляет свой реестр целиком. Скрипт таблицы
- * читает листы, сливает их с присланным по метке времени каждой записи и
- * возвращает общий результат. Телефон сливает ещё раз — уже с тем, что мог
- * успеть поменять человек, пока шёл запрос, — и сохраняет.
+ * Телефон отправляет реестр целиком, скрипт таблицы сливает его со своими
+ * листами по метке времени каждой записи и возвращает общий результат.
+ * Телефон сливает ещё раз — уже с тем, что мог успеть поменять человек,
+ * пока шёл запрос, — и сохраняет.
  *
- * Правка в таблице побеждает правку в телефоне, если она свежее, и наоборот.
- * Сервера тут нет: вся договорённость держится на updatedAt.
+ * ВАЖНО: скрипт на стороне таблицы обязан писать только в те столбцы,
+ * которые человек заполняет руками. Формульные столбцы (номер, отдел,
+ * суммы, ранги) он не трогает — иначе один обмен сотрёт всю механику книги.
  */
 object Sync {
 
@@ -33,7 +34,6 @@ object Sync {
         encodeDefaults = true
     }
 
-    /** Что изменилось за обмен — чтобы человеку было что показать. */
     data class Report(val fromTable: Int, val at: String) {
         val text: String
             get() = if (fromTable == 0) "Таблица уже совпадает"
@@ -52,7 +52,9 @@ object Sync {
 
         val text = post(url, json.encodeToString(JsonObject.serializer(), request))
         val root = runCatching { json.parseToJsonElement(text).jsonObject }
-            .getOrElse { error("Таблица ответила не по-джейсонному. Обычно это значит, что скрипт развёрнут с доступом «только я».") }
+            .getOrElse {
+                error("Таблица ответила не по-джейсонному. Обычно это значит, что скрипт развёрнут с доступом «только я».")
+            }
 
         if (root["ok"]?.jsonPrimitive?.booleanOrNull != true) {
             error(root["error"]?.jsonPrimitive?.contentOrNull ?: "Скрипт таблицы вернул отказ")
@@ -73,9 +75,10 @@ object Sync {
 
     private fun incomingCount(local: Db, remote: Db): Int =
         newer(local.customers, remote.customers) +
-            newer(local.contractors, remote.contractors) +
+            newer(local.employees, remote.employees) +
             newer(local.sites, remote.sites) +
-            newer(local.contracts, remote.contracts)
+            newer(local.contracts, remote.contracts) +
+            newer(local.handovers, remote.handovers)
 
     private fun <T : Row> newer(local: List<T>, remote: List<T>): Int {
         val byId = local.associateBy { it.id }

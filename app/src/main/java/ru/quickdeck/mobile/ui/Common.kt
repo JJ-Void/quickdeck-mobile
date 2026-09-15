@@ -29,20 +29,24 @@ import ru.quickdeck.mobile.core.Q
 import ru.quickdeck.mobile.core.QIcon
 import ru.quickdeck.mobile.core.T
 import ru.quickdeck.mobile.core.Type
+import ru.quickdeck.mobile.data.Stage
 import ru.quickdeck.mobile.data.Status
 
-fun Status.tone(): T.Tone = when (this) {
-    Status.DRAFT -> T.muted
-    Status.WORK -> T.accent
-    Status.WAIT -> T.warning
-    Status.DONE -> T.success
-    Status.OVERDUE -> T.danger
-    Status.ARCHIVE -> T.muted
+/** Цвет статуса берётся от стадии: сорок один оттенок никто не различит. */
+fun Stage.tone(): T.Tone = when (this) {
+    Stage.LEAD -> T.info
+    Stage.CONTRACT -> T.accent
+    Stage.PRODUCTION -> T.accent
+    Stage.ACCEPTANCE -> T.warning
+    Stage.PAYMENT -> T.success
+    Stage.PROBLEM -> T.danger
 }
+
+fun Status.tone(): T.Tone = stage.tone()
 
 /** Статус — всегда плашка с текстом. Цвет один не носит смысла. */
 @Composable
-fun StatusChip(status: Status, modifier: Modifier = Modifier) {
+fun StatusChip(status: Status, modifier: Modifier = Modifier, short: Boolean = false) {
     val tone = status.tone()
     Box(
         modifier
@@ -50,24 +54,21 @@ fun StatusChip(status: Status, modifier: Modifier = Modifier) {
             .background(tone.chip)
             .padding(horizontal = 8.dp, vertical = 3.dp)
     ) {
-        Q(status.label, Type.caption, tone.ink)
+        Q(if (short) status.stage.short else status.label, Type.caption, tone.ink, 1)
     }
 }
 
-/** Поверхность-лист: радиус 24, граница волосяная. */
 @Composable
-fun Sheet(
-    modifier: Modifier = Modifier,
-    radius: androidx.compose.ui.unit.Dp = T.rSheet,
-    content: @Composable ColumnScope.() -> Unit
-) {
-    Column(
+fun StageChip(stage: Stage, modifier: Modifier = Modifier) {
+    val tone = stage.tone()
+    Box(
         modifier
-            .clip(RoundedCornerShape(radius))
-            .background(T.surface)
-            .border(1.dp, T.hairline, RoundedCornerShape(radius)),
-        content = content
-    )
+            .clip(RoundedCornerShape(percent = 50))
+            .background(tone.chip)
+            .padding(horizontal = 8.dp, vertical = 3.dp)
+    ) {
+        Q(stage.short, Type.caption, tone.ink, 1)
+    }
 }
 
 /** Нажатие — уменьшение до 0.96, без ряби и без цветовой анимации. */
@@ -98,7 +99,6 @@ fun Pressable(
     )
 }
 
-/** Одна цветная кнопка на экран — главная. Остальные нейтральные. */
 @Composable
 fun PrimaryButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
     Pressable(onClick, modifier.fillMaxWidth(), enabled) {
@@ -134,12 +134,9 @@ fun Hairline(modifier: Modifier = Modifier) {
 }
 
 /**
- * Поле ввода.
- *
- * Подпись-подсказка рисуется внутри декорации, а не отдельным слоем поверх:
- * иначе она перекрывает курсор и кажется, что поле не принимает текст.
- * Рамка подсвечивается по фокусу — это единственный способ понять, куда
- * сейчас попадут буквы, когда полей на экране восемь.
+ * Поле ввода. Подсказка рисуется внутри декорации, а не слоем поверх, иначе
+ * она перекрывает курсор. Рамка подсвечивается по фокусу — это единственный
+ * способ понять, куда сейчас попадут буквы, когда полей на экране восемь.
  */
 @Composable
 fun Field(
@@ -150,13 +147,20 @@ fun Field(
     placeholder: String = "",
     numeric: Boolean = false,
     singleLine: Boolean = true,
-    imeAction: ImeAction = ImeAction.Next
+    imeAction: ImeAction = ImeAction.Next,
+    hint: String? = null,
+    warn: Boolean = false
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
+    val line = when {
+        warn -> T.danger.fill
+        focused -> T.accent.fill
+        else -> T.hairline
+    }
 
     Column(modifier.fillMaxWidth()) {
-        Q(label, Type.caption, if (focused) T.accent.ink else T.text3)
+        Q(label, Type.caption, if (warn) T.danger.ink else if (focused) T.accent.ink else T.text3)
         Spacer(Modifier.height(T.xs))
         BasicTextField(
             value = value,
@@ -178,8 +182,8 @@ fun Field(
                         .clip(RoundedCornerShape(T.rControl))
                         .background(T.surface)
                         .border(
-                            width = if (focused) 1.5.dp else 1.dp,
-                            color = if (focused) T.accent.fill else T.hairline,
+                            width = if (focused || warn) 1.5.dp else 1.dp,
+                            color = line,
                             shape = RoundedCornerShape(T.rControl)
                         )
                         .padding(horizontal = T.md, vertical = 14.dp),
@@ -192,16 +196,21 @@ fun Field(
                 }
             }
         )
+        if (hint != null) {
+            Spacer(Modifier.height(T.xs))
+            Q(hint, Type.caption, if (warn) T.danger.ink else T.text3)
+        }
     }
 }
 
-/** Строка выбора: показывает, что выбрано, открывает список. */
+/** Строка выбора: показывает, что выбрано, и открывает список поверх формы. */
 @Composable
 fun PickerRow(
     label: String,
     value: String?,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    sub: String? = null
 ) {
     Column(modifier.fillMaxWidth()) {
         Q(label, Type.caption, T.text3)
@@ -214,35 +223,44 @@ fun PickerRow(
                     .clip(RoundedCornerShape(T.rControl))
                     .background(T.surface)
                     .border(1.dp, T.hairline, RoundedCornerShape(T.rControl))
-                    .padding(horizontal = T.md),
+                    .padding(horizontal = T.md, vertical = T.sm),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Q(
-                    value?.takeIf { it.isNotBlank() } ?: "Выбрать",
-                    Type.body,
-                    if (value.isNullOrBlank()) T.text3 else T.text,
-                    maxLines = 1,
-                    modifier = Modifier.weight(1f)
-                )
+                Column(Modifier.weight(1f)) {
+                    Q(
+                        value?.takeIf { it.isNotBlank() } ?: "Выбрать",
+                        Type.body,
+                        if (value.isNullOrBlank()) T.text3 else T.text,
+                        1
+                    )
+                    if (sub != null && !value.isNullOrBlank()) {
+                        Q(sub, Type.caption, T.text3, 1)
+                    }
+                }
                 QIcon(Ic.chevronRight, size = 20.dp, tint = T.text3)
             }
         }
     }
 }
 
-/** Выбор статуса — те же плашки, что и в списках. */
+/**
+ * Выбор статуса в две ступени: сначала стадия, потом статус внутри неё.
+ * Сорок один статус одной лентой не читается, а стадий всего шесть.
+ */
 @Composable
-fun StatusPicker(value: Status, options: List<Status>, onPick: (Status) -> Unit) {
+fun StatusPicker(value: Status, onPick: (Status) -> Unit) {
+    var stage by remember(value) { mutableStateOf(value.stage) }
+
     Column(Modifier.fillMaxWidth()) {
-        Q("Статус", Type.caption, T.text3)
+        Q("Стадия", Type.caption, T.text3)
         Spacer(Modifier.height(T.xs))
         Row(
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(T.sm)
         ) {
-            options.forEach { s ->
-                val selected = s == value
-                Pressable({ onPick(s) }) {
+            Stage.entries.forEach { s ->
+                val selected = s == stage
+                Pressable({ stage = s }) {
                     Box(
                         Modifier
                             .heightIn(min = 40.dp)
@@ -257,6 +275,34 @@ fun StatusPicker(value: Status, options: List<Status>, onPick: (Status) -> Unit)
                         contentAlignment = Alignment.Center
                     ) {
                         Q(s.label, Type.caption, if (selected) s.tone().ink else T.text2, 1)
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(T.md))
+        Q("Статус", Type.caption, T.text3)
+        Spacer(Modifier.height(T.xs))
+        Column(verticalArrangement = Arrangement.spacedBy(T.xs)) {
+            Status.byStage(stage).forEach { s ->
+                val selected = s == value
+                Pressable({ onPick(s) }, Modifier.fillMaxWidth()) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = T.touchMin)
+                            .clip(RoundedCornerShape(T.rControl))
+                            .background(if (selected) s.tone().chip else T.surface)
+                            .border(
+                                if (selected) 1.5.dp else 1.dp,
+                                if (selected) s.tone().fill else T.hairline,
+                                RoundedCornerShape(T.rControl)
+                            )
+                            .padding(horizontal = T.md, vertical = T.sm),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Q(s.label, Type.small, if (selected) s.tone().ink else T.text, 2, Modifier.weight(1f))
+                        if (selected) QIcon(Ic.check, size = 18.dp, tint = s.tone().ink, stroke = 2f)
                     }
                 }
             }
