@@ -1,0 +1,7 @@
+e: The daemon has terminated unexpectedly on startup attempt #1 with error code: 0. The daemon process output:
+e: file:///home/runner/work/quickdeck-mobile/quickdeck-mobile/app/src/main/java/ru/quickdeck/mobile/overlay/Panel.kt:700:18 Cannot infer type for this parameter. Please specify it explicitly.
+e: file:///home/runner/work/quickdeck-mobile/quickdeck-mobile/app/src/main/java/ru/quickdeck/mobile/overlay/Panel.kt:700:18 Not enough information to infer type argument for 'T'.
+e: file:///home/runner/work/quickdeck-mobile/quickdeck-mobile/app/src/main/java/ru/quickdeck/mobile/overlay/Panel.kt:700:36 Cannot infer type for this parameter. Please specify it explicitly.
+e: file:///home/runner/work/quickdeck-mobile/quickdeck-mobile/app/src/main/java/ru/quickdeck/mobile/overlay/Panel.kt:700:38 Unresolved reference 'mutableStateOf'.
+FAILURE: Build failed with an exception.
+* What went wrong:
