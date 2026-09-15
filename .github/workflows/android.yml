@@ -33,8 +33,8 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      # Подпись. Если секретов нет — APK подпишется отладочным ключом,
-      # он ставится на телефон так же, просто не годится для магазина.
+      # Подпись: если в секретах есть keystore — APK подписывается ключом,
+      # иначе собирается неподписанный.
       - name: Keystore
         if: env.KEYSTORE_BASE64 != ''
         run: |
@@ -47,16 +47,31 @@ jobs:
           EOF
 
       - name: Build
-        run: gradle --no-daemon assembleRelease
+        run: set -o pipefail; gradle --no-daemon assembleRelease 2>&1 | tee build.log
+
+      # Логи Actions доступны только админу репозитория, поэтому при падении
+      # ошибки компиляции выкладываются в ветку ci-log.
+      - name: Publish log
+        if: failure()
+        run: |
+          grep -E "^(e:|w:|FAILURE|\* What went wrong|Caused by)" build.log | head -300 > errors.txt || true
+          tail -200 build.log > tail.txt
+          git config user.name ci
+          git config user.email ci@local
+          git checkout --orphan ci-log
+          git rm -rf --cached . > /dev/null
+          git add -f errors.txt tail.txt
+          git commit -m "build log"
+          git push -f origin ci-log
 
       - name: Rename
         run: |
           mkdir -p out
-          cp app/build/outputs/apk/release/*.apk "out/QuickDeck-${GITHUB_REF_NAME//\//-}.apk"
+          cp app/build/outputs/apk/release/*.apk "out/Podryad-${GITHUB_REF_NAME//\//-}.apk"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: QuickDeck-apk
+          name: podryad-apk
           path: out/*.apk
 
       - name: Release
@@ -65,6 +80,5 @@ jobs:
         with:
           files: out/*.apk
           body: |
-            QuickDeck для Android.
-            Скачай APK, открой на телефоне, разреши установку из этого источника.
-            После установки включи «Полоску у края» и дай разрешение «Поверх других приложений».
+            «Подряд» для Android.
+            Скачайте APK, откройте на телефоне, разрешите установку из этого источника.
