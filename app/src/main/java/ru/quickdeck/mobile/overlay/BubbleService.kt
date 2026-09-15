@@ -13,6 +13,8 @@ import android.content.res.Configuration
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.os.Build
+import androidx.annotation.RequiresApi
+import ru.quickdeck.mobile.core.PANEL_BLUR_DP
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -387,6 +389,30 @@ class BubbleService : Service(), OverlayHost {
     }
 
     // --- OverlayHost ------------------------------------------------------
+
+    override fun panelBlur(on: Boolean) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        applyBlur(on)
+    }
+
+    // Размытие того, что лежит за окном, плюс лёгкое затемнение от системы.
+    // Своим скримом такого не нарисовать: панель не видит, что под ней.
+    @RequiresApi(Build.VERSION_CODES.S)
+    private fun applyBlur(on: Boolean) {
+        val view = panelHost ?: return
+        val params = panelParams ?: return
+        params.flags = if (on) {
+            params.flags or WindowManager.LayoutParams.FLAG_BLUR_BEHIND or
+                WindowManager.LayoutParams.FLAG_DIM_BEHIND
+        } else {
+            params.flags and WindowManager.LayoutParams.FLAG_BLUR_BEHIND.inv() and
+                WindowManager.LayoutParams.FLAG_DIM_BEHIND.inv()
+        }
+        params.blurBehindRadius =
+            if (on) (PANEL_BLUR_DP * resources.displayMetrics.density).toInt() else 0
+        params.dimAmount = if (on) 0.34f else 0f
+        runCatching { wm.updateViewLayout(view, params) }
+    }
 
     override fun panelTouchable(value: Boolean) {
         val view = panelHost ?: return

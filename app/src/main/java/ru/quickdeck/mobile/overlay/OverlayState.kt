@@ -43,6 +43,9 @@ interface OverlayHost {
     /** Пропускать касания сквозь панель или ловить их. */
     fun panelTouchable(value: Boolean)
 
+    /** Размыть то, что за панелью. Включается, только пока панель видна. */
+    fun panelBlur(on: Boolean)
+
     /** Притянуть пузырь к ближайшему краю и запомнить место. */
     fun snapBubble()
 
@@ -130,6 +133,7 @@ object OverlayState {
         createArmed = false
         card = null
         mode = PanelMode.WHEEL
+        host?.panelBlur(true)
     }
 
     fun dragTo(virtualValue: Float, newMode: WheelMode) {
@@ -180,6 +184,7 @@ object OverlayState {
         createArmed = false
         wheelMode = WheelMode.CANCEL
         moving = false
+        host?.panelBlur(false)
         host?.panelTouchable(false)
     }
 

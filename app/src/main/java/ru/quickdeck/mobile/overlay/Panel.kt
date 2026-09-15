@@ -28,6 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
@@ -80,7 +81,16 @@ fun PanelRoot(host: OverlayHost) {
         // поэтому здесь клик вешается только когда он может сработать.
         val scrim = Modifier
             .fillMaxSize()
-            .background(T.panelScrim.copy(alpha = T.panelScrim.alpha * dim))
+            .background(
+                // Сверху светлее, снизу глубже: панель встаёт на фон, а не
+                // лежит на ровной серой заливке.
+                Brush.verticalGradient(
+                    listOf(
+                        T.panelScrim.copy(alpha = T.panelScrim.alpha * dim * 0.78f),
+                        T.panelScrim.copy(alpha = T.panelScrim.alpha * dim)
+                    )
+                )
+            )
         Box(
             if (mode == PanelMode.WHEEL) scrim
             else scrim.clickable(
