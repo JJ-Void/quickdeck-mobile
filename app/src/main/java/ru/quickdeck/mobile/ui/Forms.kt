@@ -207,6 +207,54 @@ fun ContractForm(
             onClick = { onPick(PickRequest.EmployeePick { e -> c = c.copy(responsible = e.name) }) }
         )
 
+        // Исполнителей на договоре обычно несколько: ответственный ведёт, но
+        // работают ещё люди. В таблице под них три столбца соисполнителей.
+        Spacer(Modifier.height(T.md))
+        Q("Соисполнители", Type.caption, T.text3)
+        Spacer(Modifier.height(T.xs))
+        c.coExecutors.forEachIndexed { index, name ->
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = T.xs),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(Modifier.weight(1f)) {
+                    PickerRow(
+                        label = "",
+                        value = name,
+                        sub = db.employeeByName(name)?.let { e ->
+                            listOf(e.position, e.department).filter { it.isNotBlank() }.joinToString(" · ")
+                        },
+                        onClick = {
+                            onPick(PickRequest.EmployeePick { e ->
+                                c = c.copy(
+                                    coExecutors = c.coExecutors.toMutableList().also { it[index] = e.name }
+                                )
+                            })
+                        }
+                    )
+                }
+                Pressable({
+                    c = c.copy(coExecutors = c.coExecutors.filterIndexed { i, _ -> i != index })
+                }) {
+                    Box(Modifier.size(T.touchMin), contentAlignment = Alignment.Center) {
+                        QIcon(Ic.close, size = 18.dp, tint = T.text3, stroke = 2f)
+                    }
+                }
+            }
+        }
+        // Таблица держит трёх соисполнителей — больше туда не уедет.
+        if (c.coExecutors.size < 3) {
+            GhostButton("Добавить соисполнителя", {
+                onPick(PickRequest.EmployeePick { e ->
+                    if (e.name !in c.coExecutors && e.name != c.responsible) {
+                        c = c.copy(coExecutors = c.coExecutors + e.name)
+                    }
+                })
+            }, Modifier.fillMaxWidth())
+        } else {
+            Q("Больше трёх таблица не хранит", Type.caption, T.text3)
+        }
+
         Spacer(Modifier.height(T.lg))
         Q("Оплаты", Type.caption, T.text3)
         Spacer(Modifier.height(T.xs))

@@ -8,6 +8,7 @@ import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.*
@@ -17,7 +18,9 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import ru.quickdeck.mobile.core.Ic
@@ -28,6 +31,8 @@ import ru.quickdeck.mobile.core.Type
 import ru.quickdeck.mobile.data.Db
 import ru.quickdeck.mobile.data.Section
 import ru.quickdeck.mobile.data.Stage
+import ru.quickdeck.mobile.data.Status
+import ru.quickdeck.mobile.data.plural
 import ru.quickdeck.mobile.data.dateShort
 import ru.quickdeck.mobile.data.money
 import ru.quickdeck.mobile.ui.Pressable
@@ -60,6 +65,7 @@ fun ColumnScope.DeckLayer(db: Db, host: OverlayHost) {
 
     when (level) {
         DeckLevel.CATEGORIES -> CategoryDeck(db, host)
+        DeckLevel.GROUPS -> GroupDeck(db, host)
         DeckLevel.ITEMS -> ItemDeck(db, host)
         DeckLevel.CARD -> CardDeck(db, host)
     }
@@ -72,15 +78,18 @@ fun ColumnScope.DeckLayer(db: Db, host: OverlayHost) {
 private fun DeckHeader(db: Db, host: OverlayHost) {
     val level = OverlayState.deck
     val section = OverlayState.section
+    val group = OverlayState.group
     val title = when (level) {
         DeckLevel.CATEGORIES -> "Реестр"
-        DeckLevel.ITEMS -> section.title
+        DeckLevel.GROUPS -> section.title
+        DeckLevel.ITEMS -> group ?: section.title
         DeckLevel.CARD -> section.one
     }
     val sub = when (level) {
         DeckLevel.CATEGORIES -> "Выбери раздел"
-        DeckLevel.ITEMS -> "${db.count(section)} в реестре"
-        DeckLevel.CARD -> section.title
+        DeckLevel.GROUPS -> groupTitle(section)
+        DeckLevel.ITEMS -> if (group != null) section.title else "${db.count(section)} в реестре"
+        DeckLevel.CARD -> listOfNotNull(section.title, group).joinToString(" · ")
     }
 
     Row(
@@ -88,7 +97,9 @@ private fun DeckHeader(db: Db, host: OverlayHost) {
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (level != DeckLevel.CATEGORIES) {
-            RoundAction(Ic.chevronLeft, "Назад") { OverlayState.deckBack() }
+            RoundAction(Ic.chevronLeft, "Назад") {
+                OverlayState.deckBack(groupsOf(db, OverlayState.section).size > 1)
+            }
             Spacer(Modifier.width(T.sm))
         }
         Column(Modifier.weight(1f)) {
@@ -111,6 +122,7 @@ private fun DeckHeader(db: Db, host: OverlayHost) {
 private fun DeckHint(level: DeckLevel) {
     val text = when (level) {
         DeckLevel.CATEGORIES -> "Листай вбок · тап — открыть раздел"
+        DeckLevel.GROUPS -> "Листай вбок · тап — открыть пачку"
         DeckLevel.ITEMS -> "Листай вбок · тап — открыть запись"
         DeckLevel.CARD -> "Листай вбок — соседние записи"
     }
@@ -149,6 +161,7 @@ private fun <E> ColumnScope.Carousel(
 
     val state = rememberLazyListState(startIndex.coerceIn(0, items.lastIndex))
     val scope = rememberCoroutineScope()
+    val arcDepth = with(LocalDensity.current) { 34.dp.toPx() }
 
     val center by remember(items) {
         derivedStateOf {
@@ -173,25 +186,28 @@ private fun <E> ColumnScope.Carousel(
             modifier = Modifier.fillMaxWidth()
         ) {
             itemsIndexed(items, key = { _, item -> key(item) }) { index, item ->
-                val away = abs(index - center)
                 val focused = index == center
-                val scale by animateFloatAsState(
-                    targetValue = if (focused) 1f else 0.92f,
-                    animationSpec = tween(T.MS_STATE, easing = T.curve),
-                    label = "cardScale"
-                )
-                val fade by animateFloatAsState(
-                    targetValue = if (focused) 1f else (1f - 0.22f * away).coerceIn(0.35f, 1f),
-                    animationSpec = tween(T.MS_STATE, easing = T.curve),
-                    label = "cardFade"
-                )
+                // Насколько карточка ушла от центра: 0 — ровно в центре,
+                // ±1 — на месте соседа. Берётся из реального смещения ленты,
+                // поэтому дуга едет вместе с пальцем, а не скачками по индексу.
+                val offset = centerOffset(state, index)
 
                 Box(
                     Modifier
                         .width(cardW)
                         .height(cardH)
-                        .scale(scale)
-                        .alpha(fade)
+                        .graphicsLayer {
+                            val d = offset.coerceIn(-2f, 2f)
+                            val fall = d * d
+                            // Карточки идут по дуге: края ниже и завалены
+                            // наружу, будто лежат на колесе, а не на рельсе.
+                            translationY = fall * arcDepth
+                            rotationZ = d * 6f
+                            scaleX = 1f - 0.12f * fall
+                            scaleY = 1f - 0.12f * fall
+                            alpha = (1f - 0.34f * fall).coerceIn(0.28f, 1f)
+                            cameraDistance = 16f * density
+                        }
                 ) {
                     DeckCard(focused) {
                         // Тап по соседней карточке подводит её в центр, а не
@@ -204,6 +220,20 @@ private fun <E> ColumnScope.Carousel(
             }
         }
     }
+}
+
+/**
+ * Смещение карточки от центра экрана в ширинах карточки: 0 — в центре,
+ * ±1 — на месте соседа. Пока карточка не отрисована, считаем по индексам.
+ */
+private fun centerOffset(state: LazyListState, index: Int): Float {
+    val info = state.layoutInfo
+    val item = info.visibleItemsInfo.firstOrNull { it.index == index }
+        ?: return (index - state.firstVisibleItemIndex).toFloat()
+    val viewportCenter = (info.viewportStartOffset + info.viewportEndOffset) / 2f
+    val itemCenter = item.offset + item.size / 2f
+    val step = (item.size + info.mainAxisItemSpacing).coerceAtLeast(1)
+    return (itemCenter - viewportCenter) / step
 }
 
 /** Подложка карточки. Стеклянная, с заметной кромкой у центральной. */
@@ -257,7 +287,7 @@ private fun ColumnScope.CategoryDeck(db: Db, host: OverlayHost) {
         startIndex = sections.indexOf(OverlayState.section).coerceAtLeast(0),
         key = { it.name },
         onCenter = { OverlayState.focusSection(it, host) },
-        onOpen = { OverlayState.openItems(it) }
+        onOpen = { OverlayState.openItems(it, groupsOf(db, it).size > 1) }
     ) { section, focused ->
         Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
             Box(
@@ -282,7 +312,109 @@ private fun ColumnScope.CategoryDeck(db: Db, host: OverlayHost) {
     }
 }
 
-// --- уровень 2: записи раздела -------------------------------------------
+// --- уровень 2: пачки ------------------------------------------------------
+
+/**
+ * Пачка — промежуточный слой между разделом и записями.
+ *
+ * Полсотни договоров одной лентой не читаются: глаз цепляется за отказы и
+ * закрытые, хотя работать нужно с текущими. Поэтому договоры разложены по
+ * стадиям, а всё отменённое и оплаченное уходит в «Архив» — он последний и
+ * открывается, только если туда зайти. Сотрудники разложены по отделам,
+ * объекты — по заказчикам.
+ */
+private data class Pack(val name: String, val count: Int, val tone: T.Tone, val archive: Boolean)
+
+private fun groupTitle(section: Section): String = when (section) {
+    Section.CONTRACTS -> "По стадиям"
+    Section.STAFF -> "По отделам"
+    Section.SITES -> "По заказчикам"
+    Section.CUSTOMERS -> ""
+}
+
+/** Архив — то, с чем уже не работают: отказ, расторжение, полностью оплачен. */
+private val archiveStages = setOf(Stage.PROBLEM)
+
+private fun packToneOf(section: Section, name: String): T.Tone = when (section) {
+    Section.CONTRACTS -> Stage.entries.firstOrNull { it.label == name }?.tone() ?: T.muted
+    else -> T.muted
+}
+
+/** Пачки раздела в порядке, в котором по ним ходят. */
+private fun groupsOf(db: Db, section: Section): List<Pack> {
+    val faces = facesOf(db, section)
+    if (faces.isEmpty()) return emptyList()
+    val names = LinkedHashMap<String, Int>()
+    faces.forEach { f ->
+        val key = f.group ?: return@forEach
+        names[key] = (names[key] ?: 0) + 1
+    }
+    if (names.isEmpty()) return emptyList()
+
+    val order = when (section) {
+        Section.CONTRACTS -> Stage.entries.map { it.label } + listOf(ARCHIVE)
+        else -> names.keys.toList()
+    }
+    return order.filter { names.containsKey(it) }.map { name ->
+        Pack(
+            name = name,
+            count = names[name] ?: 0,
+            tone = if (name == ARCHIVE) T.muted else packToneOf(section, name),
+            archive = name == ARCHIVE
+        )
+    }
+}
+
+private const val ARCHIVE = "Архив"
+
+@Composable
+private fun ColumnScope.GroupDeck(db: Db, host: OverlayHost) {
+    val section = OverlayState.section
+    val packs = remember(db, section) { groupsOf(db, section) }
+
+    Carousel(
+        items = packs,
+        startIndex = packs.indexOfFirst { it.name == OverlayState.group }.coerceAtLeast(0),
+        key = { it.name },
+        onCenter = { OverlayState.focusGroup(it.name, host) },
+        onOpen = { OverlayState.openGroup(it.name) }
+    ) { pack, focused ->
+        Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
+            Box(
+                Modifier
+                    .size(64.dp)
+                    .clip(RoundedCornerShape(T.rCard))
+                    .background(
+                        if (pack.archive) Color.White.copy(alpha = 0.06f)
+                        else pack.tone.fill.copy(alpha = if (focused) 0.22f else 0.12f)
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                QIcon(
+                    if (pack.archive) Ic.layers else sectionIcon(section),
+                    size = 30.dp,
+                    tint = if (pack.archive) T.text2OnDark else pack.tone.fill,
+                    stroke = if (focused) 2f else 1.75f
+                )
+            }
+            Spacer(Modifier.height(T.lg))
+            Q(pack.name, Type.title, T.textOnDark, 3)
+            Spacer(Modifier.height(T.xs))
+            Q(
+                "${pack.count} " + plural(pack.count.toLong(), "запись", "записи", "записей"),
+                Type.small,
+                T.text2OnDark,
+                1
+            )
+            if (pack.archive) {
+                Spacer(Modifier.height(T.sm))
+                Q("Отказы и расторжения — чтобы не мешались", Type.caption, T.text2OnDark, 2)
+            }
+        }
+    }
+}
+
+// --- уровень 3: записи пачки ----------------------------------------------
 
 /** Что показывать в карточке записи: одинаково для всех разделов. */
 private data class ItemFace(
@@ -291,13 +423,15 @@ private data class ItemFace(
     val subtitle: String,
     val stage: Stage?,
     val trailing: String,
+    val group: String?,
     val facts: List<Pair<String, String>>
 )
 
 @Composable
 private fun ColumnScope.ItemDeck(db: Db, host: OverlayHost) {
     val section = OverlayState.section
-    val faces = remember(db, section) { facesOf(db, section) }
+    val group = OverlayState.group
+    val faces = remember(db, section, group) { facesOf(db, section).filter { group == null || it.group == group } }
 
     Carousel(
         items = faces,
@@ -358,6 +492,7 @@ private fun facesOf(db: Db, section: Section): List<ItemFace> = when (section) {
             subtitle = db.customer(s.customerId)?.name.orEmpty(),
             stage = db.stageOfSite(s.id),
             trailing = if (s.progress > 0) "${s.progress} %" else "",
+            group = db.customer(s.customerId)?.name ?: "Без заказчика",
             facts = listOf(
                 "Адрес" to s.address,
                 "Тип" to s.buildingType,
@@ -374,6 +509,8 @@ private fun facesOf(db: Db, section: Section): List<ItemFace> = when (section) {
             subtitle = st.label,
             stage = st.stage,
             trailing = if (c.amount != 0L) money(c.amount) else "",
+            // Отказ и расторжение — в архив, остальное по стадии.
+            group = if (st.stage in archiveStages || st == Status.PAID_FULL) ARCHIVE else st.stage.label,
             facts = listOf(
                 "Объект" to (db.site(c.siteId)?.name ?: ""),
                 "Срок" to (c.end.takeIf { it.isNotBlank() }?.let { dateShort(it) } ?: ""),
@@ -389,6 +526,7 @@ private fun facesOf(db: Db, section: Section): List<ItemFace> = when (section) {
             subtitle = p.inn.takeIf { it.isNotBlank() }?.let { "ИНН $it" }.orEmpty(),
             stage = null,
             trailing = "",
+            group = null,
             facts = listOf(
                 "Телефон" to p.phone,
                 "Руководитель" to p.director,
@@ -404,6 +542,7 @@ private fun facesOf(db: Db, section: Section): List<ItemFace> = when (section) {
             subtitle = listOf(e.position, e.department).filter { it.isNotBlank() }.joinToString(" · "),
             stage = null,
             trailing = "",
+            group = e.department.ifBlank { "Без отдела" },
             facts = listOf(
                 "Телефон" to e.phones.firstOrNull().orEmpty(),
                 "Чатов" to e.chats.size.toString(),
@@ -423,7 +562,10 @@ private fun facesOf(db: Db, section: Section): List<ItemFace> = when (section) {
 @Composable
 private fun ColumnScope.CardDeck(db: Db, host: OverlayHost) {
     val section = OverlayState.section
-    val ids = remember(db, section) { facesOf(db, section).map { it.id } }
+    val group = OverlayState.group
+    val ids = remember(db, section, group) {
+        facesOf(db, section).filter { group == null || it.group == group }.map { it.id }
+    }
     val startId = OverlayState.card?.id
 
     Carousel(

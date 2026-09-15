@@ -13,7 +13,7 @@ import kotlin.math.roundToInt
 data class CardRef(val section: Section, val id: String)
 
 /** Уровни колоды: чем глубже, тем конкретнее. */
-enum class DeckLevel { CATEGORIES, ITEMS, CARD }
+enum class DeckLevel { CATEGORIES, GROUPS, ITEMS, CARD }
 
 /** Что сейчас на экране поверх всего. */
 enum class PanelMode {
@@ -106,6 +106,17 @@ object OverlayState {
     var deck by mutableStateOf(DeckLevel.CATEGORIES)
         private set
 
+    /**
+     * Выбранная группа внутри раздела: стадия для договоров, отдел для
+     * сотрудников, заказчик для объектов. Пусто — группы не выбирали.
+     *
+     * Слой групп нужен ровно затем, чтобы не листать полсотни карточек:
+     * сначала «что за пачка», потом «что внутри». Если групп меньше двух,
+     * слой пропускается — выбирать не из чего.
+     */
+    var group by mutableStateOf<String?>(null)
+        private set
+
     /** Откуда пришли: объект и договор последней открытой карточки. */
     var contextSiteId: String? = null
         private set
@@ -190,6 +201,7 @@ object OverlayState {
     fun openDeck() {
         card = null
         deck = DeckLevel.CATEGORIES
+        group = null
         mode = PanelMode.BROWSE
         host?.panelVisible(true)
         host?.panelBlur(true)
@@ -203,11 +215,26 @@ object OverlayState {
         host?.buzz(6)
     }
 
-    /** Шаг вглубь: записи выбранного раздела. */
-    fun openItems(value: Section) {
+    /** Шаг вглубь: группы раздела, а если их нет — сразу записи. */
+    fun openItems(value: Section, hasGroups: Boolean) {
         section = value
         card = null
+        group = null
+        deck = if (hasGroups) DeckLevel.GROUPS else DeckLevel.ITEMS
+    }
+
+    /** Группа выбрана — дальше её записи. */
+    fun openGroup(value: String) {
+        group = value
+        card = null
         deck = DeckLevel.ITEMS
+    }
+
+    /** Центр на уровне групп: запоминаем, но вглубь не уходим. */
+    fun focusGroup(value: String, host: OverlayHost?) {
+        if (group == value) return
+        group = value
+        host?.buzz(6)
     }
 
     /** Центр колоды на уровне карточек — запись меняется без ухода назад. */
@@ -226,13 +253,15 @@ object OverlayState {
     }
 
     /** Шаг назад по уровням. С верхнего уровня выход закрывает панель. */
-    fun deckBack() {
+    fun deckBack(hasGroups: Boolean = true) {
         when (deck) {
-            DeckLevel.CARD -> {
-                deck = DeckLevel.ITEMS
-            }
+            DeckLevel.CARD -> deck = DeckLevel.ITEMS
             DeckLevel.ITEMS -> {
                 card = null
+                deck = if (hasGroups) DeckLevel.GROUPS else DeckLevel.CATEGORIES
+            }
+            DeckLevel.GROUPS -> {
+                group = null
                 deck = DeckLevel.CATEGORIES
             }
             DeckLevel.CATEGORIES -> close()
@@ -242,6 +271,7 @@ object OverlayState {
     fun openBrowse(value: Section) {
         section = value
         card = null
+        group = null
         deck = DeckLevel.ITEMS
         mode = PanelMode.BROWSE
         host?.panelVisible(true)
@@ -281,6 +311,7 @@ object OverlayState {
         card = null
         contextSiteId = null
         contextContractId = null
+        group = null
         virtual = 0f
         createArmed = false
         wheelMode = WheelMode.CANCEL

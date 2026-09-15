@@ -363,12 +363,17 @@ private fun BoxScope.PickOverlay(request: PickRequest, db: Db, maxH: Dp, onClose
 
 @Composable
 private fun ColumnScope.ValueList(request: PickRequest.Values, onClose: () -> Unit) {
+    var query by remember { mutableStateOf("") }
+    val shown = remember(query, request.options) { filtered(request.options, query) { it } }
+
+    if (request.options.size > 7) SearchBox(query) { query = it }
+
     LazyColumn(
         Modifier.weight(1f, fill = false),
         contentPadding = PaddingValues(start = T.lg, end = T.lg, bottom = T.lg),
         verticalArrangement = Arrangement.spacedBy(T.xs)
     ) {
-        items(request.options) { option ->
+        items(shown) { option ->
             val selected = option.equals(request.current, true)
             Pressable({ request.onPick(option); onClose() }, Modifier.fillMaxWidth()) {
                 Row(
@@ -395,13 +400,17 @@ private fun ColumnScope.PartyList(
     onClose: () -> Unit
 ) {
     var fresh by remember { mutableStateOf("") }
+    var query by remember { mutableStateOf("") }
+    val shown = remember(query, list) { filtered(list, query) { it.name + " " + it.inn } }
+
+    if (list.size > 7) SearchBox(query) { query = it }
 
     LazyColumn(
         Modifier.weight(1f, fill = false),
         contentPadding = PaddingValues(start = T.lg, end = T.lg),
         verticalArrangement = Arrangement.spacedBy(T.sm)
     ) {
-        items(list, key = { it.id }) { p ->
+        items(shown, key = { it.id }) { p ->
             PartyRow(p, p.inn.takeIf { it.isNotBlank() }?.let { "ИНН $it" }, Ic.customers) {
                 onPick(p); onClose()
             }
@@ -425,13 +434,20 @@ private fun ColumnScope.PartyList(
 @Composable
 private fun ColumnScope.EmployeeList(list: List<Employee>, onPick: (Employee) -> Unit, onClose: () -> Unit) {
     var fresh by remember { mutableStateOf("") }
+    var query by remember { mutableStateOf("") }
+    // Сотрудников десятки: листать весь список ради одного человека — долго.
+    val shown = remember(query, list) {
+        filtered(list, query) { it.name + " " + it.department + " " + it.position }
+    }
+
+    if (list.size > 7) SearchBox(query) { query = it }
 
     LazyColumn(
         Modifier.weight(1f, fill = false),
         contentPadding = PaddingValues(start = T.lg, end = T.lg),
         verticalArrangement = Arrangement.spacedBy(T.sm)
     ) {
-        items(list, key = { it.id }) { e ->
+        items(shown, key = { it.id }) { e ->
             EmployeeRow(e) { onPick(e); onClose() }
         }
     }
@@ -451,13 +467,19 @@ private fun ColumnScope.EmployeeList(list: List<Employee>, onPick: (Employee) ->
 @Composable
 private fun ColumnScope.SiteList(db: Db, onPick: (Site) -> Unit, onClose: () -> Unit) {
     var fresh by remember { mutableStateOf("") }
+    var query by remember { mutableStateOf("") }
+    val shown = remember(query, db.liveSites) {
+        filtered(db.liveSites, query) { it.name + " " + it.address + " " + it.fullName }
+    }
+
+    if (db.liveSites.size > 7) SearchBox(query) { query = it }
 
     LazyColumn(
         Modifier.weight(1f, fill = false),
         contentPadding = PaddingValues(start = T.lg, end = T.lg),
         verticalArrangement = Arrangement.spacedBy(T.sm)
     ) {
-        items(db.liveSites, key = { it.id }) { s ->
+        items(shown, key = { it.id }) { s ->
             SiteRow(s, db) { onPick(s); onClose() }
         }
     }

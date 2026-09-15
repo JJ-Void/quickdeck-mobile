@@ -224,8 +224,12 @@ fun PickerRow(
     sub: String? = null
 ) {
     Column(modifier.fillMaxWidth()) {
-        Q(label, Type.caption, T.text3)
-        Spacer(Modifier.height(T.xs))
+        // Пустая подпись — строка идёт без неё: так выглядят повторяющиеся
+        // строки внутри одного блока, например соисполнители.
+        if (label.isNotBlank()) {
+            Q(label, Type.caption, T.text3)
+            Spacer(Modifier.height(T.xs))
+        }
         Pressable(onClick, Modifier.fillMaxWidth()) {
             Row(
                 Modifier
@@ -390,6 +394,59 @@ fun <E> WheelPicker(
                         if (center) T.text else T.text2,
                         1
                     )
+                }
+            }
+        }
+    }
+}
+
+// --- поиск в списках ------------------------------------------------------
+
+/**
+ * Отбор по подстроке, без учёта регистра и порядка слов: «ильин пто» найдёт
+ * «Ильинов Генадий Ильич · ОТДЕЛ ПТО». Пустой запрос ничего не отсеивает.
+ */
+fun <E> filtered(list: List<E>, query: String, text: (E) -> String): List<E> {
+    val words = query.trim().lowercase().split(Regex("\\s+")).filter { it.isNotBlank() }
+    if (words.isEmpty()) return list
+    return list.filter { item ->
+        val hay = text(item).lowercase()
+        words.all { hay.contains(it) }
+    }
+}
+
+/** Строка поиска над длинным списком. Появляется, только когда есть что искать. */
+@Composable
+fun SearchBox(query: String, onChange: (String) -> Unit) {
+    Box(Modifier.fillMaxWidth().padding(horizontal = T.lg, vertical = T.xs)) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = T.touchMin)
+                .clip(RoundedCornerShape(T.rControl))
+                .background(T.surface)
+                .border(1.dp, T.hairline, RoundedCornerShape(T.rControl))
+                .padding(horizontal = T.md),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            QIcon(Ic.search, size = 18.dp, tint = T.text3)
+            Spacer(Modifier.width(T.sm))
+            Box(Modifier.weight(1f)) {
+                if (query.isEmpty()) Q("Поиск", Type.body, T.text3, 1)
+                BasicTextField(
+                    value = query,
+                    onValueChange = onChange,
+                    singleLine = true,
+                    textStyle = Type.body.copy(color = T.text),
+                    cursorBrush = SolidColor(T.accent.fill),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            if (query.isNotEmpty()) {
+                Pressable({ onChange("") }) {
+                    Box(Modifier.size(32.dp), contentAlignment = Alignment.Center) {
+                        QIcon(Ic.close, size = 16.dp, tint = T.text3, stroke = 2f)
+                    }
                 }
             }
         }
