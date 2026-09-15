@@ -47,6 +47,10 @@ fun Progress(percent: Int, modifier: Modifier = Modifier) {
     }
 }
 
+/** Просрочка выставляется сама — держать её руками в статусе невозможно. */
+private fun shown(status: Status, deadline: String): Status =
+    if (status == Status.WORK && overdueText(deadline) != null) Status.OVERDUE else status
+
 /**
  * Строка списка объекта: имя, статус плашкой, контрагент и срок, прогресс.
  * Вся строка — одна зона нажатия.
@@ -54,7 +58,7 @@ fun Progress(percent: Int, modifier: Modifier = Modifier) {
 @Composable
 fun SiteRow(site: Site, db: Db, onClick: () -> Unit) {
     val overdue = overdueText(site.deadline)
-    val status = if (overdue != null && site.status == Status.WORK) Status.OVERDUE else site.status
+    val status = shown(site.status, site.deadline)
     Pressable(onClick, Modifier.fillMaxWidth()) {
         Row(
             Modifier
@@ -92,7 +96,7 @@ fun SiteRow(site: Site, db: Db, onClick: () -> Unit) {
 @Composable
 fun ContractRow(c: Contract, db: Db, onClick: () -> Unit) {
     val overdue = overdueText(c.end)
-    val status = if (overdue != null && c.status == Status.WORK) Status.OVERDUE else c.status
+    val status = shown(c.status, c.end)
     Pressable(onClick, Modifier.fillMaxWidth()) {
         Row(
             Modifier
@@ -158,7 +162,11 @@ fun PartyRow(p: Party, subtitle: String?, icon: String, onClick: () -> Unit) {
 // --- карточки деталей ---------------------------------------------------
 
 @Composable
-private fun KeyValue(key: String, value: String, valueColor: androidx.compose.ui.graphics.Color = T.text) {
+private fun KeyValue(
+    key: String,
+    value: String,
+    valueColor: androidx.compose.ui.graphics.Color = T.text
+) {
     Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
         Q(key, Type.small, T.text3, 1, Modifier.width(110.dp))
         Q(value.ifBlank { "—" }, Type.small, valueColor, modifier = Modifier.weight(1f))
@@ -168,7 +176,7 @@ private fun KeyValue(key: String, value: String, valueColor: androidx.compose.ui
 @Composable
 fun SiteCard(site: Site, db: Db, onEdit: () -> Unit, onAddContract: () -> Unit) {
     val overdue = overdueText(site.deadline)
-    val status = if (overdue != null && site.status == Status.WORK) Status.OVERDUE else site.status
+    val status = shown(site.status, site.deadline)
     Column(Modifier.fillMaxWidth().padding(T.lg)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Q(site.name, Type.title, T.text, 2, Modifier.weight(1f))
@@ -187,7 +195,11 @@ fun SiteCard(site: Site, db: Db, onEdit: () -> Unit, onAddContract: () -> Unit) 
         Spacer(Modifier.height(T.md))
         KeyValue("Заказчик", db.customer(site.customerId)?.name ?: "")
         KeyValue("Адрес", site.address)
-        KeyValue("Срок", if (site.deadline.isBlank()) "" else dateLong(site.deadline), if (overdue != null) T.danger.ink else T.text)
+        KeyValue(
+            "Срок",
+            if (site.deadline.isBlank()) "" else dateLong(site.deadline),
+            if (overdue != null) T.danger.ink else T.text
+        )
         if (overdue != null) KeyValue("", overdue, T.danger.ink)
         if (site.note.isNotBlank()) KeyValue("Примечание", site.note)
 
@@ -197,7 +209,10 @@ fun SiteCard(site: Site, db: Db, onEdit: () -> Unit, onAddContract: () -> Unit) 
             Q("Договоры", Type.caption, T.text3)
             Spacer(Modifier.height(T.sm))
             list.forEach { c ->
-                Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Q(c.number.ifBlank { "Без номера" }, Type.small, T.text, 1, Modifier.weight(1f))
                     Q(money(c.amount), Type.smallNum, T.text2)
                 }
@@ -214,7 +229,7 @@ fun SiteCard(site: Site, db: Db, onEdit: () -> Unit, onAddContract: () -> Unit) 
 @Composable
 fun ContractCard(c: Contract, db: Db, onEdit: () -> Unit) {
     val overdue = overdueText(c.end)
-    val status = if (overdue != null && c.status == Status.WORK) Status.OVERDUE else c.status
+    val status = shown(c.status, c.end)
     Column(Modifier.fillMaxWidth().padding(T.lg)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Q("Договор ${c.number}", Type.title, T.text, 2, Modifier.weight(1f))
@@ -231,7 +246,11 @@ fun ContractCard(c: Contract, db: Db, onEdit: () -> Unit) {
         KeyValue("Заказчик", db.customer(c.customerId)?.name ?: "")
         KeyValue("Исполнитель", db.contractor(c.contractorId)?.name ?: "")
         KeyValue("Начало", if (c.start.isBlank()) "" else dateLong(c.start))
-        KeyValue("Срок", if (c.end.isBlank()) "" else dateLong(c.end), if (overdue != null) T.danger.ink else T.text)
+        KeyValue(
+            "Срок",
+            if (c.end.isBlank()) "" else dateLong(c.end),
+            if (overdue != null) T.danger.ink else T.text
+        )
         if (overdue != null) KeyValue("", overdue, T.danger.ink)
         if (c.note.isNotBlank()) KeyValue("Примечание", c.note)
 
@@ -259,20 +278,26 @@ fun PartyCard(p: Party, db: Db, isCustomer: Boolean, onEdit: () -> Unit) {
                 Q("Объекты", Type.caption, T.text3)
                 Spacer(Modifier.height(T.sm))
                 sites.forEach { s ->
-                    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Q(s.name, Type.small, T.text, 1, Modifier.weight(1f))
-                        StatusChip(s.status)
+                        StatusChip(shown(s.status, s.deadline))
                     }
                 }
             }
         } else {
-            val list = db.contracts.filter { it.contractorId == p.id }
+            val list = db.liveContracts.filter { it.contractorId == p.id }
             if (list.isNotEmpty()) {
                 Spacer(Modifier.height(T.lg))
                 Q("Договоры", Type.caption, T.text3)
                 Spacer(Modifier.height(T.sm))
                 list.forEach { c ->
-                    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Q(c.number.ifBlank { "Без номера" }, Type.small, T.text, 1, Modifier.weight(1f))
                         Q(money(c.amount), Type.smallNum, T.text2)
                     }

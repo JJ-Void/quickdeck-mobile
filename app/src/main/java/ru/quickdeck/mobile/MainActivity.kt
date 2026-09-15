@@ -8,6 +8,8 @@ import android.os.Bundle
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -21,6 +23,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
@@ -28,8 +31,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import ru.quickdeck.mobile.core.*
 import ru.quickdeck.mobile.data.*
-import ru.quickdeck.mobile.overlay.EdgeService
-import ru.quickdeck.mobile.overlay.EmptyState
+import ru.quickdeck.mobile.overlay.BubbleService
 import ru.quickdeck.mobile.ui.*
 
 class MainActivity : ComponentActivity() {
@@ -44,25 +46,30 @@ class MainActivity : ComponentActivity() {
 private sealed interface Screen {
     data object Home : Screen
     data class SectionList(val section: Section) : Screen
-    data class CardSite(val id: String) : Screen
-    data class CardContract(val id: String) : Screen
-    data class CardParty(val id: String, val customer: Boolean) : Screen
-    data class FormSite(val value: Site) : Screen
-    data class FormContract(val value: Contract) : Screen
-    data class FormParty(val value: Party, val customer: Boolean) : Screen
+    data class Card(val section: Section, val id: String) : Screen
+    data class Form(val section: Section, val id: String?) : Screen
     data class Pick(val request: PickRequest, val stamp: Long) : Screen
 }
 
 @Composable
 private fun AppRoot() {
     val db by Store.db.collectAsState()
+    val scope = rememberCoroutineScope()
     val stack = remember { mutableStateListOf<Screen>(Screen.Home) }
-    val current = stack.last()
 
     fun push(s: Screen) = stack.add(s)
     fun pop() {
         if (stack.size > 1) stack.removeAt(stack.size - 1)
     }
+
+    fun afterSave() {
+        if (Store.autoSync && Store.syncConfigured) {
+            scope.launch { withContext(Dispatchers.IO) { Sync.run() } }
+        }
+        pop()
+    }
+
+    BackHandler(enabled = stack.size > 1) { pop() }
 
     Box(
         Modifier
@@ -70,111 +77,86 @@ private fun AppRoot() {
             .background(T.bg)
             .windowInsetsPadding(WindowInsets.systemBars)
     ) {
-        when (val s = current) {
-            is Screen.Home -> HomeScreen(db) { push(it) }
+        when (val s = stack.last()) {
+            Screen.Home -> HomeScreen(db) { push(it) }
 
             is Screen.SectionList -> SectionScreen(
                 section = s.section,
                 db = db,
                 onBack = { pop() },
                 onOpen = { push(it) },
-                onCreate = { push(newForm(s.section)) }
+                onCreate = { push(Screen.Form(s.section, null)) }
             )
 
-            is Screen.CardSite -> db.site(s.id)?.let { site ->
-                Scaffold(title = site.name, onBack = { pop() }) {
-                    SiteCard(site, db,
-                        onEdit = { push(Screen.FormSite(site)) },
-                        onAddContract = {
-                            push(Screen.FormContract(Contract(siteId = site.id, customerId = site.customerId)))
-                        }
-                    )
-                }
-            } ?: run { pop() }
+            is Screen.Card -> CardScreen(
+                section = s.section,
+                id = s.id,
+                db = db,
+                onBack = { pop() },
+                onEdit = { push(Screen.Form(s.section, s.id)) },
+                onAddContract = { push(Screen.Form(Section.CONTRACTS, null)) }
+            )
 
-            is Screen.CardContract -> db.contracts.firstOrNull { it.id == s.id }?.let { c ->
-                Scaffold(title = "Договор ${c.number}", onBack = { pop() }) {
-                    ContractCard(c, db, onEdit = { push(Screen.FormContract(c)) })
-                }
-            } ?: run { pop() }
-
-            is Screen.CardParty -> {
-                val list = if (s.customer) db.customers else db.contractors
-                list.firstOrNull { it.id == s.id }?.let { p ->
-                    Scaffold(title = p.name, onBack = { pop() }) {
-                        PartyCard(p, db, s.customer, onEdit = { push(Screen.FormParty(p, s.customer)) })
+            is Screen.Form -> FormScreen(
+                section = s.section,
+                id = s.id,
+                db = db,
+                onPick = { push(Screen.Pick(it, System.currentTimeMillis())) },
+                onSaved = { afterSave() },
+                onCancel = { pop() },
+                onDeleted = {
+                    // после удаления возвращаемся мимо карточки — её больше нет
+                    while (stack.size > 1 && stack.last() !is Screen.SectionList) {
+                        stack.removeAt(stack.size - 1)
                     }
-                } ?: run { pop() }
-            }
-
-            is Screen.FormSite -> SiteForm(
-                initial = s.value, db = db,
-                onPick = { push(Screen.Pick(it, System.currentTimeMillis())) },
-                onDone = { Store.upsertSite(it); pop() },
-                onCancel = { pop() }
-            )
-
-            is Screen.FormContract -> ContractForm(
-                initial = s.value, db = db,
-                onPick = { push(Screen.Pick(it, System.currentTimeMillis())) },
-                onDone = { Store.upsertContract(it); pop() },
-                onCancel = { pop() }
-            )
-
-            is Screen.FormParty -> PartyForm(
-                initial = s.value,
-                title = if (s.customer) "Заказчик" else "Исполнитель",
-                onDone = {
-                    if (s.customer) Store.upsertCustomer(it) else Store.upsertContractor(it)
-                    pop()
-                },
-                onCancel = { pop() }
-            )
-
-            is Screen.Pick -> PickScreen(s.request, db, onDone = { pop() })
-        }
-    }
-}
-
-@Composable
-private fun Scaffold(title: String, onBack: () -> Unit, content: @Composable () -> Unit) {
-    Column(Modifier.fillMaxSize()) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = T.sm, vertical = T.sm),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Pressable(onBack) {
-                Box(Modifier.size(T.touchMin), contentAlignment = Alignment.Center) {
-                    QIcon(Ic.chevronLeft, size = 24.dp, tint = T.text)
+                    if (Store.autoSync && Store.syncConfigured) {
+                        scope.launch { withContext(Dispatchers.IO) { Sync.run() } }
+                    }
                 }
-            }
-            Q(title, Type.heading, T.text, 1, Modifier.weight(1f))
-        }
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-            content()
+            )
+
+            is Screen.Pick -> PickScreen(
+                request = s.request,
+                db = db,
+                onDone = { pop() },
+                onCreate = { section -> push(Screen.Form(section, null)) }
+            )
         }
     }
 }
+
+// --- главный экран -------------------------------------------------------
 
 @Composable
 private fun HomeScreen(db: Db, onOpen: (Screen) -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    var edgeOn by remember { mutableStateOf(Store.edgeEnabled) }
-    var right by remember { mutableStateOf(Store.edgeRight) }
-    var url by remember { mutableStateOf(Store.sheetsUrl) }
-    var syncing by remember { mutableStateOf(false) }
-    var granted by remember { mutableStateOf(EdgeService.canDraw(ctx)) }
 
-    val notifLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+    var bubbleOn by remember { mutableStateOf(Store.bubbleEnabled) }
+    var url by remember { mutableStateOf(Store.sheetsUrl) }
+    var auto by remember { mutableStateOf(Store.autoSync) }
+    var syncing by remember { mutableStateOf(false) }
+    var lastSync by remember { mutableStateOf(Store.lastSync) }
+    var granted by remember { mutableStateOf(BubbleService.canDraw(ctx)) }
+
+    val notifLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { }
 
-    val overlayLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+    val overlayLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
-        granted = EdgeService.canDraw(ctx)
-        if (granted && edgeOn) EdgeService.start(ctx)
+        granted = BubbleService.canDraw(ctx)
+        if (granted && bubbleOn) BubbleService.start(ctx)
+    }
+
+    fun askOverlay() {
+        overlayLauncher.launch(
+            Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:${ctx.packageName}")
+            )
+        )
     }
 
     Column(
@@ -188,39 +170,30 @@ private fun HomeScreen(db: Db, onOpen: (Screen) -> Unit) {
         Q("Реестр под большой палец", Type.small, T.text2)
         Spacer(Modifier.height(T.xl))
 
-        // Полоска у края
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(T.rCard))
-                .background(T.surface)
-                .padding(T.lg)
-        ) {
+        // --- пузырь -------------------------------------------------------
+        Panel {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Q("Полоска у края", Type.heading, T.text)
+                    Q("Пузырь поверх приложений", Type.heading, T.text)
                     Q(
-                        if (edgeOn) "Свайп от края открывает колесо" else "Выключена",
+                        if (bubbleOn) "Висит поверх всего, таскается пальцем" else "Выключен",
                         Type.small, T.text2
                     )
                 }
-                Toggle(edgeOn) { value ->
-                    if (value && !EdgeService.canDraw(ctx)) {
-                        overlayLauncher.launch(
-                            Intent(
-                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                Uri.parse("package:${ctx.packageName}")
-                            )
-                        )
+                Toggle(bubbleOn) { value ->
+                    if (value && !BubbleService.canDraw(ctx)) {
+                        askOverlay()
                         return@Toggle
                     }
-                    edgeOn = value
-                    Store.edgeEnabled = value
+                    bubbleOn = value
+                    Store.bubbleEnabled = value
                     if (value) {
-                        if (Build.VERSION.SDK_INT >= 33) notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                        EdgeService.start(ctx)
+                        if (Build.VERSION.SDK_INT >= 33) {
+                            notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        }
+                        BubbleService.start(ctx)
                     } else {
-                        EdgeService.stop(ctx)
+                        BubbleService.stop(ctx)
                     }
                 }
             }
@@ -228,33 +201,22 @@ private fun HomeScreen(db: Db, onOpen: (Screen) -> Unit) {
             if (!granted) {
                 Spacer(Modifier.height(T.md))
                 Q(
-                    "Нужно разрешение «Поверх других приложений» — без него полоска не появится.",
+                    "Нужно разрешение «Поверх других приложений» — без него пузыря не будет.",
                     Type.small, T.warning.ink
                 )
                 Spacer(Modifier.height(T.sm))
-                GhostButton("Дать разрешение", {
-                    overlayLauncher.launch(
-                        Intent(
-                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                            Uri.parse("package:${ctx.packageName}")
-                        )
-                    )
-                }, Modifier.fillMaxWidth())
+                GhostButton("Дать разрешение", { askOverlay() }, Modifier.fillMaxWidth())
             }
 
             Spacer(Modifier.height(T.lg))
-            Q("Сторона", Type.caption, T.text3)
+            Hairline()
+            Spacer(Modifier.height(T.md))
+            Q("Как им пользоваться", Type.caption, T.text3)
             Spacer(Modifier.height(T.sm))
-            Row(horizontalArrangement = Arrangement.spacedBy(T.sm)) {
-                SideChip("Слева", !right) {
-                    right = false; Store.edgeRight = false
-                    if (edgeOn) { EdgeService.stop(ctx); EdgeService.start(ctx) }
-                }
-                SideChip("Справа", right) {
-                    right = true; Store.edgeRight = true
-                    if (edgeOn) { EdgeService.stop(ctx); EdgeService.start(ctx) }
-                }
-            }
+            Gesture("Тап", "открыть список последнего раздела")
+            Gesture("Потянуть в сторону", "колесо разделов; отпустил — открылся")
+            Gesture("Потянуть дальше", "вместо открытия — сразу новая запись")
+            Gesture("Долгое нажатие", "пузырь отрывается, тащи куда удобно")
         }
 
         Spacer(Modifier.height(T.xl))
@@ -262,12 +224,6 @@ private fun HomeScreen(db: Db, onOpen: (Screen) -> Unit) {
         Spacer(Modifier.height(T.sm))
 
         Section.entries.forEach { s ->
-            val count = when (s) {
-                Section.CUSTOMERS -> db.customers.size
-                Section.SITES -> db.sites.size
-                Section.CONTRACTS -> db.contracts.size
-                Section.CONTRACTORS -> db.contractors.size
-            }
             Pressable({ onOpen(Screen.SectionList(s)) }, Modifier.fillMaxWidth()) {
                 Row(
                     Modifier
@@ -277,17 +233,10 @@ private fun HomeScreen(db: Db, onOpen: (Screen) -> Unit) {
                         .padding(T.md),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    CardIcon(
-                        when (s) {
-                            Section.CUSTOMERS -> Ic.customers
-                            Section.SITES -> Ic.sites
-                            Section.CONTRACTS -> Ic.contracts
-                            Section.CONTRACTORS -> Ic.contractors
-                        }
-                    )
+                    CardIcon(sectionIcon(s))
                     Spacer(Modifier.width(T.md))
                     Q(s.title, Type.heading, T.text, 1, Modifier.weight(1f))
-                    Q(count.toString(), Type.smallNum, T.text2)
+                    Q(db.count(s).toString(), Type.smallNum, T.text2)
                     Spacer(Modifier.width(T.sm))
                     QIcon(Ic.chevronRight, size = 20.dp, tint = T.text3)
                 }
@@ -295,25 +244,33 @@ private fun HomeScreen(db: Db, onOpen: (Screen) -> Unit) {
             Spacer(Modifier.height(T.md))
         }
 
+        // --- таблица ------------------------------------------------------
         Spacer(Modifier.height(T.lg))
-        Q("Архив в Google-таблице", Type.caption, T.text3)
+        Q("Google-таблица", Type.caption, T.text3)
         Spacer(Modifier.height(T.sm))
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(T.rCard))
-                .background(T.surface)
-                .padding(T.lg)
-        ) {
+        Panel {
+            Q(
+                "Связь двусторонняя: правки из телефона уезжают в таблицу, правки в таблице приезжают обратно. Спорные случаи решаются по времени правки.",
+                Type.small, T.text2
+            )
+            Spacer(Modifier.height(T.md))
             Field(
                 "Ссылка веб-приложения Apps Script",
                 url,
-                { url = it; Store.sheetsUrl = it },
+                { url = it; Store.sheetsUrl = it.trim() },
                 placeholder = "https://script.google.com/macros/s/.../exec"
             )
             Spacer(Modifier.height(T.md))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Q("Обмениваться самому", Type.small, T.text)
+                    Q("после каждой правки и при открытии пузыря", Type.caption, T.text3)
+                }
+                Toggle(auto) { auto = it; Store.autoSync = it }
+            }
+            Spacer(Modifier.height(T.md))
             PrimaryButton(
-                if (syncing) "Отправляю…" else "Отправить в таблицу",
+                if (syncing) "Обмениваюсь…" else "Синхронизировать сейчас",
                 onClick = {
                     if (url.isBlank()) {
                         Toast.makeText(ctx, "Сначала вставь ссылку", Toast.LENGTH_SHORT).show()
@@ -321,20 +278,21 @@ private fun HomeScreen(db: Db, onOpen: (Screen) -> Unit) {
                     }
                     syncing = true
                     scope.launch {
-                        val result = withContext(Dispatchers.IO) { Export.toSheets(url, Store.raw()) }
+                        val result = withContext(Dispatchers.IO) { Sync.run() }
                         syncing = false
+                        lastSync = Store.lastSync
                         Toast.makeText(
                             ctx,
-                            result.fold({ "Таблица обновлена" }, { "Не вышло: ${it.message}" }),
+                            result.fold({ it.text }, { "Не вышло: ${it.message}" }),
                             Toast.LENGTH_LONG
                         ).show()
                     }
                 },
                 enabled = !syncing
             )
-            if (Store.lastSync.isNotBlank()) {
+            if (lastSync.isNotBlank()) {
                 Spacer(Modifier.height(T.sm))
-                Q("Последняя отправка: ${Store.lastSync}", Type.caption, T.text3)
+                Q("Последний обмен: $lastSync", Type.caption, T.text3)
             }
             Spacer(Modifier.height(T.sm))
             GhostButton("Выгрузить CSV и копию", { Export.share(ctx) }, Modifier.fillMaxWidth())
@@ -345,15 +303,22 @@ private fun HomeScreen(db: Db, onOpen: (Screen) -> Unit) {
 }
 
 @Composable
-private fun SideChip(text: String, selected: Boolean, onClick: () -> Unit) {
-    Pressable(onClick) {
-        Box(
-            Modifier
-                .clip(RoundedCornerShape(percent = 50))
-                .background(if (selected) T.accent.chip else T.bg)
-                .padding(horizontal = T.lg, vertical = T.md),
-            contentAlignment = Alignment.Center
-        ) { Q(text, Type.small, if (selected) T.accent.ink else T.text2) }
+private fun Panel(content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(T.rCard))
+            .background(T.surface)
+            .padding(T.lg),
+        content = content
+    )
+}
+
+@Composable
+private fun Gesture(name: String, what: String) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
+        Q(name, Type.small, T.text, 1, Modifier.width(132.dp))
+        Q(what, Type.small, T.text2, 2, Modifier.weight(1f))
     }
 }
 
@@ -372,11 +337,13 @@ private fun Toggle(value: Boolean, onChange: (Boolean) -> Unit) {
                     .padding(horizontal = 3.dp)
                     .size(26.dp)
                     .clip(RoundedCornerShape(percent = 50))
-                    .background(androidx.compose.ui.graphics.Color.White)
+                    .background(Color.White)
             )
         }
     }
 }
+
+// --- список раздела ------------------------------------------------------
 
 @Composable
 private fun SectionScreen(
@@ -391,11 +358,7 @@ private fun SectionScreen(
             Modifier.fillMaxWidth().padding(horizontal = T.sm, vertical = T.sm),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Pressable(onBack) {
-                Box(Modifier.size(T.touchMin), contentAlignment = Alignment.Center) {
-                    QIcon(Ic.chevronLeft, size = 24.dp, tint = T.text)
-                }
-            }
+            BackButton(onBack)
             Q(section.title, Type.title, T.text, 1, Modifier.weight(1f))
             Pressable(onCreate) {
                 Box(
@@ -404,18 +367,11 @@ private fun SectionScreen(
                         .clip(RoundedCornerShape(percent = 50))
                         .background(T.accent.fill),
                     contentAlignment = Alignment.Center
-                ) { QIcon(Ic.plus, size = 22.dp, tint = androidx.compose.ui.graphics.Color.White, stroke = 2f) }
+                ) { QIcon(Ic.plus, size = 22.dp, tint = Color.White, stroke = 2f) }
             }
         }
 
-        val empty = when (section) {
-            Section.CUSTOMERS -> db.customers.isEmpty()
-            Section.CONTRACTORS -> db.contractors.isEmpty()
-            Section.SITES -> db.sites.isEmpty()
-            Section.CONTRACTS -> db.contracts.isEmpty()
-        }
-
-        if (empty) {
+        if (db.count(section) == 0) {
             EmptyState(
                 text = "${section.title} — пусто",
                 hint = "Здесь появятся записи, которые ты заведёшь.",
@@ -431,68 +387,180 @@ private fun SectionScreen(
             verticalArrangement = Arrangement.spacedBy(T.md)
         ) {
             when (section) {
-                Section.SITES -> items(db.sites, key = { it.id }) { s ->
-                    SiteRow(s, db) { onOpen(Screen.CardSite(s.id)) }
+                Section.SITES -> items(db.liveSites, key = { it.id }) { s ->
+                    SiteRow(s, db) { onOpen(Screen.Card(Section.SITES, s.id)) }
                 }
 
-                Section.CONTRACTS -> items(db.contracts, key = { it.id }) { c ->
-                    ContractRow(c, db) { onOpen(Screen.CardContract(c.id)) }
+                Section.CONTRACTS -> items(db.liveContracts, key = { it.id }) { c ->
+                    ContractRow(c, db) { onOpen(Screen.Card(Section.CONTRACTS, c.id)) }
                 }
 
-                Section.CUSTOMERS -> items(db.customers, key = { it.id }) { p ->
+                Section.CUSTOMERS -> items(db.liveCustomers, key = { it.id }) { p ->
                     PartyRow(p, p.inn.takeIf { it.isNotBlank() }?.let { "ИНН $it" }, Ic.customers) {
-                        onOpen(Screen.CardParty(p.id, true))
+                        onOpen(Screen.Card(Section.CUSTOMERS, p.id))
                     }
                 }
 
-                Section.CONTRACTORS -> items(db.contractors, key = { it.id }) { p ->
+                Section.CONTRACTORS -> items(db.liveContractors, key = { it.id }) { p ->
                     PartyRow(p, p.inn.takeIf { it.isNotBlank() }?.let { "ИНН $it" }, Ic.contractors) {
-                        onOpen(Screen.CardParty(p.id, false))
+                        onOpen(Screen.Card(Section.CONTRACTORS, p.id))
                     }
                 }
             }
         }
+    }
+}
+
+// --- карточка ------------------------------------------------------------
+
+@Composable
+private fun CardScreen(
+    section: Section,
+    id: String,
+    db: Db,
+    onBack: () -> Unit,
+    onEdit: () -> Unit,
+    onAddContract: () -> Unit
+) {
+    val title = when (section) {
+        Section.SITES -> db.site(id)?.name
+        Section.CONTRACTS -> db.contract(id)?.let { "Договор ${it.number}" }
+        Section.CUSTOMERS -> db.customer(id)?.name
+        Section.CONTRACTORS -> db.contractor(id)?.name
+    } ?: section.one
+
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = T.sm, vertical = T.sm),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BackButton(onBack)
+            Q(title, Type.heading, T.text, 1, Modifier.weight(1f))
+        }
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            when (section) {
+                Section.SITES -> db.site(id)?.let { SiteCard(it, db, onEdit, onAddContract) }
+                Section.CONTRACTS -> db.contract(id)?.let { ContractCard(it, db, onEdit) }
+                Section.CUSTOMERS -> db.customer(id)?.let { PartyCard(it, db, true, onEdit) }
+                Section.CONTRACTORS -> db.contractor(id)?.let { PartyCard(it, db, false, onEdit) }
+            }
+        }
+    }
+}
+
+// --- форма ---------------------------------------------------------------
+
+@Composable
+private fun FormScreen(
+    section: Section,
+    id: String?,
+    db: Db,
+    onPick: (PickRequest) -> Unit,
+    onSaved: () -> Unit,
+    onCancel: () -> Unit,
+    onDeleted: () -> Unit
+) {
+    val canDelete = id != null
+    when (section) {
+        Section.SITES -> SiteForm(
+            initial = db.site(id) ?: Site(),
+            db = db,
+            onPick = onPick,
+            onDone = { Store.upsertSite(it); onSaved() },
+            onCancel = onCancel,
+            onDelete = if (canDelete) ({ Store.deleteSite(id!!); onDeleted() }) else null
+        )
+
+        Section.CONTRACTS -> ContractForm(
+            initial = db.contract(id) ?: Contract(),
+            db = db,
+            onPick = onPick,
+            onDone = { Store.upsertContract(it); onSaved() },
+            onCancel = onCancel,
+            onDelete = if (canDelete) ({ Store.deleteContract(id!!); onDeleted() }) else null
+        )
+
+        Section.CUSTOMERS -> PartyForm(
+            initial = db.customer(id) ?: Party(),
+            title = if (id == null) "Новый заказчик" else "Заказчик",
+            onDone = { Store.upsertCustomer(it); onSaved() },
+            onCancel = onCancel,
+            onDelete = if (canDelete) ({ Store.deleteCustomer(id!!); onDeleted() }) else null
+        )
+
+        Section.CONTRACTORS -> PartyForm(
+            initial = db.contractor(id) ?: Party(),
+            title = if (id == null) "Новый исполнитель" else "Исполнитель",
+            onDone = { Store.upsertContractor(it); onSaved() },
+            onCancel = onCancel,
+            onDelete = if (canDelete) ({ Store.deleteContractor(id!!); onDeleted() }) else null
+        )
+    }
+}
+
+// --- выбор ---------------------------------------------------------------
+
+@Composable
+private fun PickScreen(
+    request: PickRequest,
+    db: Db,
+    onDone: () -> Unit,
+    onCreate: (Section) -> Unit
+) {
+    val section = when (request) {
+        is PickRequest.Customer -> Section.CUSTOMERS
+        is PickRequest.Contractor -> Section.CONTRACTORS
+        is PickRequest.SitePick -> Section.SITES
+    }
+
+    Column(Modifier.fillMaxSize().padding(horizontal = T.lg)) {
+        Spacer(Modifier.height(T.lg))
+        Q("Выбери ${section.one.lowercase()}", Type.title, T.text)
+        Spacer(Modifier.height(T.lg))
+
+        if (db.count(section) == 0) {
+            EmptyState(
+                text = "Здесь пока пусто",
+                hint = "Сначала заведи запись — потом она появится в выборе.",
+                action = "Создать",
+                onAction = { onCreate(section) }
+            )
+        } else {
+            LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(T.md)) {
+                when (request) {
+                    is PickRequest.Customer -> items(db.liveCustomers, key = { it.id }) { p ->
+                        PartyRow(p, null, Ic.customers) { request.onPick(p); onDone() }
+                    }
+
+                    is PickRequest.Contractor -> items(db.liveContractors, key = { it.id }) { p ->
+                        PartyRow(p, null, Ic.contractors) { request.onPick(p); onDone() }
+                    }
+
+                    is PickRequest.SitePick -> items(db.liveSites, key = { it.id }) { s ->
+                        SiteRow(s, db) { request.onPick(s); onDone() }
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(T.md))
+        GhostButton("Отмена", onDone, Modifier.fillMaxWidth())
+        Spacer(Modifier.height(T.lg))
     }
 }
 
 @Composable
-private fun PickScreen(request: PickRequest, db: Db, onDone: () -> Unit) {
-    Column(Modifier.fillMaxSize().padding(T.lg)) {
-        Q(
-            when (request) {
-                is PickRequest.Customer -> "Выбери заказчика"
-                is PickRequest.Contractor -> "Выбери исполнителя"
-                is PickRequest.SitePick -> "Выбери объект"
-            },
-            Type.title, T.text
-        )
-        Spacer(Modifier.height(T.lg))
-        LazyColumn(
-            Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(T.md)
-        ) {
-            when (request) {
-                is PickRequest.Customer -> items(db.customers, key = { it.id }) { p ->
-                    PartyRow(p, null, Ic.customers) { request.onPick(p); onDone() }
-                }
-
-                is PickRequest.Contractor -> items(db.contractors, key = { it.id }) { p ->
-                    PartyRow(p, null, Ic.contractors) { request.onPick(p); onDone() }
-                }
-
-                is PickRequest.SitePick -> items(db.sites, key = { it.id }) { s ->
-                    SiteRow(s, db) { request.onPick(s); onDone() }
-                }
-            }
+private fun BackButton(onBack: () -> Unit) {
+    Pressable(onBack) {
+        Box(Modifier.size(T.touchMin), contentAlignment = Alignment.Center) {
+            QIcon(Ic.chevronLeft, size = 24.dp, tint = T.text)
         }
-        Spacer(Modifier.height(T.md))
-        GhostButton("Отмена", onDone, Modifier.fillMaxWidth())
     }
 }
 
-private fun newForm(section: Section): Screen = when (section) {
-    Section.CUSTOMERS -> Screen.FormParty(Party(), true)
-    Section.CONTRACTORS -> Screen.FormParty(Party(), false)
-    Section.SITES -> Screen.FormSite(Site())
-    Section.CONTRACTS -> Screen.FormContract(Contract())
+private fun sectionIcon(s: Section): String = when (s) {
+    Section.SITES -> Ic.sites
+    Section.CONTRACTS -> Ic.contracts
+    Section.CUSTOMERS -> Ic.customers
+    Section.CONTRACTORS -> Ic.contractors
 }

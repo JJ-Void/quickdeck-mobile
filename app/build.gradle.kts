@@ -7,8 +7,8 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
-// Подпись берётся из keystore.properties, если он есть (создаётся в CI из секретов).
-// Если файла нет — release собирается с отладочным ключом, чтобы сборка не падала.
+// РџРѕРґРїРёСЃСЊ Р±РµСЂС‘С‚СЃСЏ РёР· keystore.properties, РµСЃР»Рё РѕРЅ РµСЃС‚СЊ (СЃРѕР·РґР°С‘С‚СЃСЏ РІ CI РёР· СЃРµРєСЂРµС‚РѕРІ).
+// Р•СЃР»Рё С„Р°Р№Р»Р° РЅРµС‚ вЂ” release СЃРѕР±РёСЂР°РµС‚СЃСЏ СЃ РѕС‚Р»Р°РґРѕС‡РЅС‹Рј РєР»СЋС‡РѕРј, С‡С‚РѕР±С‹ СЃР±РѕСЂРєР° РЅРµ РїР°РґР°Р»Р°.
 val keystorePropsFile = rootProject.file("keystore.properties")
 val keystoreProps = Properties().apply {
     if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
@@ -22,8 +22,8 @@ android {
         applicationId = "ru.quickdeck.mobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
         vectorDrawables.useSupportLibrary = false
     }
 

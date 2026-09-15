@@ -6,7 +6,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -17,75 +18,82 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import ru.quickdeck.mobile.core.*
+import ru.quickdeck.mobile.core.Ic
+import ru.quickdeck.mobile.core.Q
+import ru.quickdeck.mobile.core.QIcon
+import ru.quickdeck.mobile.core.T
+import ru.quickdeck.mobile.core.Type
 import kotlin.math.abs
 import kotlin.math.roundToInt
-import kotlin.math.sqrt
 
-/** Что рисуем в колесе: раздел или конкретная запись. */
+/** Один пункт колеса. Пунктов всегда четыре — это разделы реестра. */
 data class WheelItem(
     val title: String,
-    val subtitle: String? = null,
-    val icon: String = Ic.layers,
-    val tone: T.Tone = T.accent
+    val subtitle: String,
+    val icon: String,
+    val addLabel: String
 )
 
-enum class WheelMode {
-    /** Палец у самого края — отпустил, ничего не произошло. */
-    CANCEL,
-
-    /** Обычный выбор пункта. */
-    BROWSE,
-
-    /** Палец вытянут дальше и зафиксирован — у пункта появился плюс. */
-    CREATE
-}
-
-/** Геометрия в пикселях. Шаг 4 сохраняется: 56 = 14 × 4, 40, 200. */
+/**
+ * Геометрия в пикселях, всё от точки касания пузыря.
+ * Шаг сетки 4 сохраняется: 64 = 16 × 4, 56 = 14 × 4, 192 = 48 × 4.
+ */
 class WheelGeometry(densityPx: Float) {
-    val pitch = 56f * densityPx          // один пункт на 56 dp хода пальца
-    val cancelEdge = 40f * densityPx     // ближе к краю — отмена
-    val createEdge = 200f * densityPx    // дальше — режим «плюс»
-    val arcRadius = 3.4f * pitch         // насколько заметно выгибается колесо
-    val autoScrollZone = 96f * densityPx // у верхнего и нижнего края лист сам крутится
+    /** Один пункт на 64 dp хода пальца по вертикали. */
+    val pitch = 64f * densityPx
+
+    /** Палец почти не ушёл от пузыря — это отмена. */
+    val cancelPull = 56f * densityPx
+
+    /** Дальше этого — режим «добавить». */
+    val createPull = 192f * densityPx
+
+    /** Просвет между пузырём и карточками. */
+    val gap = 16f * densityPx
+
+    /** Колесо не прижимается к верхнему и нижнему краю. */
+    val safe = 168f * densityPx
+
+    val cardWidth = 240f * densityPx
 }
 
-/** Чистая функция: где палец — такой и выбор. */
+/**
+ * Чистая функция: где палец — такой и выбор.
+ *
+ * По вертикали — какой пункт, считается от точки, где палец лёг на пузырь.
+ * По горизонтали — насколько человек вытянул: чуть-чуть значит передумал,
+ * нормально — открыть, далеко — добавить новую запись.
+ */
 fun selectionFor(
     itemCount: Int,
-    pivotY: Float,
-    baseOffset: Float,
+    origin: Offset,
     finger: Offset,
-    fromRight: Boolean,
-    widthPx: Float,
     g: WheelGeometry
 ): Pair<Float, WheelMode> {
     if (itemCount == 0) return 0f to WheelMode.CANCEL
-    val dx = if (fromRight) widthPx - finger.x else finger.x
-    val virtual = (baseOffset + (finger.y - pivotY) / g.pitch)
+
+    val virtual = ((finger.y - origin.y) / g.pitch)
         .coerceIn(0f, (itemCount - 1).toFloat())
+
+    val pull = abs(finger.x - origin.x)
     val mode = when {
-        dx < g.cancelEdge -> WheelMode.CANCEL
-        dx < g.createEdge -> WheelMode.BROWSE
+        pull < g.cancelPull -> WheelMode.CANCEL
+        pull < g.createPull -> WheelMode.BROWSE
         else -> WheelMode.CREATE
     }
     return virtual to mode
 }
 
-/**
- * Колесо: пункты идут по дуге от края, выбранный — ближе всех к пальцу и дальше всех от края.
- * Выделение — белая карточка, кольцо акцента 1.5 и свечение того же цвета, а не заливка.
- */
+/** Колесо стоит на месте, а выбор едет по нему — так предсказуемее, чем наоборот. */
 @Composable
 fun Wheel(
     items: List<WheelItem>,
-    title: String,
     virtual: Float,
     mode: WheelMode,
     createArmed: Boolean,
     pivotY: Float,
+    originX: Float,
     fromRight: Boolean,
-    createLabel: String,
     modifier: Modifier = Modifier
 ) {
     val density = LocalDensity.current.density
@@ -93,44 +101,26 @@ fun Wheel(
     val selected = virtual.roundToInt().coerceIn(0, (items.size - 1).coerceAtLeast(0))
 
     Box(modifier.fillMaxSize()) {
-
-        // Заголовок уровня — у края, на уровне точки касания.
-        Row(
-            Modifier
-                .offset { IntOffset(0, (pivotY - 5.2f * g.pitch).roundToInt()) }
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp),
-            horizontalArrangement = if (fromRight) Arrangement.End else Arrangement.Start
-        ) {
-            Q(title, Type.caption, Color.White.copy(alpha = 0.72f))
-        }
-
         items.forEachIndexed { index, item ->
             val rel = index - virtual
-            if (abs(rel) > 4.6f) return@forEachIndexed
-
             val dy = rel * g.pitch
-            // точка на окружности вокруг места касания: в центре пункт дальше всего
-            // от края, к концам дуги — прижимается обратно
-            val t = (dy / g.arcRadius).let { 1f - it * it }.coerceAtLeast(0f)
-            val bowDp = 30f * sqrt(t)
-            val isSelected = index == selected
-            val fade = (1f - 0.17f * abs(rel)).coerceIn(0.18f, 1f)
-            val shrink = (1f - 0.07f * abs(rel)).coerceIn(0.74f, 1f)
-            val inset = (12f + bowDp).dp
-            val yPx = (pivotY + dy - 26f * density).roundToInt()
 
-            WheelRow(
+            val isSelected = index == selected
+            val near = abs(rel)
+            val fade = (1f - 0.26f * near).coerceIn(0.22f, 1f)
+            val shrink = (1f - 0.06f * near).coerceIn(0.8f, 1f)
+
+            val xPx = if (fromRight) originX - g.gap - g.cardWidth else originX + g.gap
+            val yPx = pivotY + dy - 28f * density
+
+            WheelCard(
                 item = item,
                 selected = isSelected && mode != WheelMode.CANCEL,
-                showPlus = isSelected && mode == WheelMode.CREATE,
+                creating = isSelected && mode == WheelMode.CREATE,
                 armed = createArmed,
-                createLabel = createLabel,
-                fromRight = fromRight,
+                widthPx = g.cardWidth,
                 modifier = Modifier
-                    .offset { IntOffset(0, yPx) }
-                    .fillMaxWidth()
-                    .padding(start = if (fromRight) 0.dp else inset, end = if (fromRight) inset else 0.dp)
+                    .offset { IntOffset(xPx.roundToInt(), yPx.roundToInt()) }
                     .alpha(fade)
                     .scale(shrink)
             )
@@ -139,97 +129,75 @@ fun Wheel(
 }
 
 @Composable
-private fun WheelRow(
+private fun WheelCard(
     item: WheelItem,
     selected: Boolean,
-    showPlus: Boolean,
+    creating: Boolean,
     armed: Boolean,
-    createLabel: String,
-    fromRight: Boolean,
+    widthPx: Float,
     modifier: Modifier = Modifier
 ) {
-    val ring by animateFloatAsState(
+    val density = LocalDensity.current
+    val width = with(density) { widthPx.toDp() }
+
+    val lift by animateFloatAsState(
         targetValue = if (selected) 1f else 0f,
         animationSpec = tween(T.MS_PRESS, easing = T.curve),
-        label = "ring"
+        label = "lift"
     )
-    val plusScale by animateFloatAsState(
-        targetValue = if (showPlus && armed) 1f else 0.25f,
+    val grow by animateFloatAsState(
+        targetValue = if (creating && armed) 1f else 0f,
         animationSpec = tween(T.MS_STATE, easing = T.curve),
-        label = "plus"
+        label = "grow"
     )
 
-    Row(
-        modifier,
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = if (fromRight) Arrangement.End else Arrangement.Start
-    ) {
-        if (fromRight && showPlus) {
-            PlusBadge(plusScale, createLabel, fromRight)
-            Spacer(Modifier.width(T.sm))
-        }
-
-        Row(
-            Modifier
-                .clip(RoundedCornerShape(T.rCard))
-                .background(if (selected) T.surface else T.surface.copy(alpha = 0.92f))
-                .border(
-                    width = if (selected) 1.5.dp else 1.dp,
-                    color = if (selected)
-                        item.tone.fill.copy(alpha = 0.26f + 0.74f * ring)
-                    else T.hairline,
-                    shape = RoundedCornerShape(T.rCard)
-                )
-                .heightIn(min = 52.dp)
-                .widthIn(min = 180.dp, max = 260.dp)
-                .padding(horizontal = T.md, vertical = T.sm),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                Modifier
-                    .size(32.dp)
-                    .clip(RoundedCornerShape(T.rIcon))
-                    .background(if (selected) item.tone.chip else T.muted.chip),
-                contentAlignment = Alignment.Center
-            ) {
-                QIcon(item.icon, size = 18.dp, tint = if (selected) item.tone.ink else T.text2, stroke = if (selected) 2f else 1.75f)
-            }
-            Spacer(Modifier.width(T.md))
-            Column(Modifier.weight(1f, fill = false)) {
-                Q(item.title, Type.heading, T.text, 1)
-                item.subtitle?.let {
-                    Q(it, Type.caption, T.text3, 1)
-                }
-            }
-        }
-
-        if (!fromRight && showPlus) {
-            Spacer(Modifier.width(T.sm))
-            PlusBadge(plusScale, createLabel, fromRight)
-        }
+    val fill = when {
+        creating -> T.accent.fill
+        selected -> T.panelRaised
+        else -> T.panelCard
     }
-}
+    val ink = if (creating) Color.White else T.textOnDark
+    val sub = if (creating) Color.White.copy(alpha = 0.82f) else T.text2OnDark
 
-@Composable
-private fun PlusBadge(scale: Float, label: String, fromRight: Boolean) {
     Row(
-        Modifier.scale(scale).alpha(scale.coerceIn(0f, 1f)),
+        modifier
+            .width(width)
+            .heightIn(min = 56.dp)
+            .scale(1f + 0.03f * lift + 0.02f * grow)
+            .clip(RoundedCornerShape(T.rCard))
+            .background(fill)
+            .border(
+                width = if (selected) 1.5.dp else 1.dp,
+                color = if (creating) Color.White.copy(alpha = 0.34f)
+                else if (selected) T.accent.fill.copy(alpha = 0.22f + 0.6f * lift)
+                else T.hairlineDark,
+                shape = RoundedCornerShape(T.rCard)
+            )
+            .padding(horizontal = T.md, vertical = T.sm),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        if (fromRight) {
-            Q(label, Type.caption, Color.White.copy(alpha = 0.85f))
-            Spacer(Modifier.width(T.sm))
-        }
         Box(
             Modifier
-                .size(44.dp)
-                .clip(RoundedCornerShape(percent = 50))
-                .background(T.accent.fill),
+                .size(36.dp)
+                .clip(RoundedCornerShape(T.rIcon))
+                .background(
+                    if (creating) Color.White.copy(alpha = 0.2f)
+                    else if (selected) T.accent.fill.copy(alpha = 0.18f)
+                    else Color.White.copy(alpha = 0.06f)
+                ),
             contentAlignment = Alignment.Center
-        ) { QIcon(Ic.plus, size = 22.dp, tint = Color.White, stroke = 2f) }
-        if (!fromRight) {
-            Spacer(Modifier.width(T.sm))
-            Q(label, Type.caption, Color.White.copy(alpha = 0.85f))
+        ) {
+            QIcon(
+                if (creating) Ic.plus else item.icon,
+                size = 20.dp,
+                tint = if (creating) Color.White else if (selected) T.accent.fill else T.text2OnDark,
+                stroke = if (selected || creating) 2f else 1.75f
+            )
+        }
+        Spacer(Modifier.width(T.md))
+        Column(Modifier.weight(1f)) {
+            Q(if (creating) item.addLabel else item.title, Type.heading, ink, 1)
+            Q(item.subtitle, Type.caption, sub, 1)
         }
     }
 }

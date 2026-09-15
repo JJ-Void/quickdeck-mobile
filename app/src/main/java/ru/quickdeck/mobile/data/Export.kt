@@ -5,59 +5,56 @@ import android.content.Intent
 import android.net.Uri
 import androidx.core.content.FileProvider
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
-import java.time.LocalDateTime
-import java.time.format.DateTimeFormatter
 
+/**
+ * Выгрузка «на всякий случай»: CSV на раздел плюс полная копия в JSON.
+ * Обмен с таблицей живёт отдельно, в [Sync] — это разные задачи.
+ */
 object Export {
 
     private fun esc(s: String) = "\"" + s.replace("\"", "\"\"") + "\""
 
-    /** Четыре листа одним файлом не сделать, поэтому CSV на раздел + архив в одном каталоге. */
+    private fun rows(head: String, lines: List<List<String>>): String = buildString {
+        appendLine(head)
+        lines.forEach { appendLine(it.joinToString(";") { v -> esc(v) }) }
+    }
+
     fun csv(db: Db): Map<String, String> {
         val out = LinkedHashMap<String, String>()
 
-        out["Заказчики.csv"] = buildString {
-            appendLine("Наименование;ИНН;Контакт;Телефон;Примечание")
-            db.customers.forEach {
-                appendLine(listOf(it.name, it.inn, it.contact, it.phone, it.note).joinToString(";") { v -> esc(v) })
-            }
-        }
-        out["Исполнители.csv"] = buildString {
-            appendLine("Наименование;ИНН;Контакт;Телефон;Примечание")
-            db.contractors.forEach {
-                appendLine(listOf(it.name, it.inn, it.contact, it.phone, it.note).joinToString(";") { v -> esc(v) })
-            }
-        }
-        out["Объекты.csv"] = buildString {
-            appendLine("Объект;Адрес;Заказчик;Статус;Срок;Готовность,%;Примечание")
-            db.sites.forEach { s ->
-                appendLine(
-                    listOf(
-                        s.name, s.address, db.customer(s.customerId)?.name ?: "",
-                        s.status.label, s.deadline, s.progress.toString(), s.note
-                    ).joinToString(";") { v -> esc(v) }
+        out["Заказчики.csv"] = rows(
+            "Наименование;ИНН;Контакт;Телефон;Примечание",
+            db.liveCustomers.map { listOf(it.name, it.inn, it.contact, it.phone, it.note) }
+        )
+        out["Исполнители.csv"] = rows(
+            "Наименование;ИНН;Контакт;Телефон;Примечание",
+            db.liveContractors.map { listOf(it.name, it.inn, it.contact, it.phone, it.note) }
+        )
+        out["Объекты.csv"] = rows(
+            "Объект;Адрес;Заказчик;Статус;Срок;Готовность,%;Примечание",
+            db.liveSites.map { s ->
+                listOf(
+                    s.name, s.address, db.customer(s.customerId)?.name ?: "",
+                    s.status.label, dateInput(s.deadline), s.progress.toString(), s.note
                 )
             }
-        }
-        out["Договоры.csv"] = buildString {
-            appendLine("Номер;Объект;Заказчик;Исполнитель;Сумма;Статус;Начало;Срок;Примечание")
-            db.contracts.forEach { c ->
-                appendLine(
-                    listOf(
-                        c.number, db.site(c.siteId)?.name ?: "",
-                        db.customer(c.customerId)?.name ?: "",
-                        db.contractor(c.contractorId)?.name ?: "",
-                        c.amount.toString(), c.status.label, c.start, c.end, c.note
-                    ).joinToString(";") { v -> esc(v) }
+        )
+        out["Договоры.csv"] = rows(
+            "Номер;Объект;Заказчик;Исполнитель;Сумма;Статус;Начало;Срок;Примечание",
+            db.liveContracts.map { c ->
+                listOf(
+                    c.number, db.site(c.siteId)?.name ?: "",
+                    db.customer(c.customerId)?.name ?: "",
+                    db.contractor(c.contractorId)?.name ?: "",
+                    c.amount.toString(), c.status.label,
+                    dateInput(c.start), dateInput(c.end), c.note
                 )
             }
-        }
+        )
         return out
     }
 
-    /** Складывает CSV и JSON в кэш и открывает системный «Поделиться». */
+    /** Складывает CSV и копию в кэш и открывает системное «Поделиться». */
     fun share(ctx: Context) {
         val dir = File(ctx.cacheDir, "share").apply { deleteRecursively(); mkdirs() }
         val files = ArrayList<Uri>()
@@ -66,7 +63,7 @@ object Export {
         csv(Store.db.value).forEach { (name, text) ->
             val f = File(dir, name)
             // BOM — чтобы Excel не ломал кириллицу
-            f.writeText("\uFEFF" + text)
+            f.writeText("﻿" + text)
             files += FileProvider.getUriForFile(ctx, auth, f)
         }
         val backup = File(dir, "quickdeck.json").apply { writeText(Store.raw()) }
@@ -77,30 +74,8 @@ object Export {
             putParcelableArrayListExtra(Intent.EXTRA_STREAM, files)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        ctx.startActivity(Intent.createChooser(intent, "Выгрузка реестра").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-    }
-
-    /**
-     * Отправка всего реестра в Google-таблицу.
-     * На стороне таблицы стоит веб-приложение Apps Script (код в README),
-     * оно принимает JSON и перезаписывает листы. Логина и OAuth не требует.
-     */
-    fun toSheets(url: String, payload: String): Result<String> = runCatching {
-        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            doOutput = true
-            connectTimeout = 15000
-            readTimeout = 30000
-            instanceFollowRedirects = true
-            setRequestProperty("Content-Type", "application/json; charset=utf-8")
-        }
-        conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
-        val code = conn.responseCode
-        val body = (if (code in 200..299) conn.inputStream else conn.errorStream)
-            ?.bufferedReader()?.use { it.readText() } ?: ""
-        conn.disconnect()
-        if (code !in 200..299) error("Таблица ответила $code: ${body.take(120)}")
-        Store.lastSync = LocalDateTime.now().format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm"))
-        body.take(200)
+        ctx.startActivity(
+            Intent.createChooser(intent, "Выгрузка реестра").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
     }
 }

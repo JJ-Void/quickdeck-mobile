@@ -7,4 +7,21 @@
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:windowLightNavigationBar">true</item>
     </style>
+
+    <!--
+        Лист поверх чужого экрана. Прозрачное окно нужно, чтобы под формой
+        осталось видно то приложение, из которого её позвали, — иначе переход
+        читается как «меня выкинуло в другую программу».
+    -->
+    <style name="Theme.QuickDeck.Sheet" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowAnimationStyle">@android:style/Animation.Translucent</item>
+    </style>
 </resources>
