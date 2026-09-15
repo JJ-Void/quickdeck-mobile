@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalConfiguration
@@ -443,6 +444,44 @@ private fun ColumnScope.SummaryDeck(db: Db) {
     ) { _, focused -> SummaryFace(db, focused) }
 }
 
+
+/**
+ * Обложка карточки — узкая цветная полоса поверху.
+ *
+ * Цвет выводится из названия: у одной и той же записи он всегда одинаковый,
+ * у соседних — разный. Карточки перестают выглядеть близнецами, и пролистывая
+ * ленту, узнаёшь нужную боковым зрением, ещё не прочитав подпись. Фото сюда
+ * встанет позже, на то же место.
+ */
+@Composable
+private fun Cover(seed: String, icon: String, tone: T.Tone?) {
+    val hue = remember(seed) { coverHue(seed) }
+    val base = tone?.fill ?: Color.hsv(hue, 0.45f, 0.85f)
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(64.dp)
+            .clip(RoundedCornerShape(T.rCard))
+            .background(
+                Brush.linearGradient(
+                    listOf(base.copy(alpha = 0.34f), base.copy(alpha = 0.10f))
+                )
+            ),
+        contentAlignment = Alignment.CenterStart
+    ) {
+        Box(Modifier.padding(start = T.md)) {
+            QIcon(icon, size = 28.dp, tint = base, stroke = 2f)
+        }
+    }
+}
+
+/** Устойчивый оттенок из строки: одно имя — один цвет, всегда. */
+private fun coverHue(seed: String): Float {
+    var h = 0
+    seed.forEach { h = h * 31 + it.code }
+    return ((h % 360) + 360) % 360f
+}
+
 // --- уровень 2: пачки ------------------------------------------------------
 
 /**
@@ -577,19 +616,12 @@ private fun ColumnScope.ItemDeck(db: Db, host: OverlayHost) {
         onOpen = { OverlayState.openCard(CardRef(section, it.id)) }
     ) { face, focused ->
         Column(Modifier.fillMaxSize()) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier
-                        .size(44.dp)
-                        .clip(RoundedCornerShape(T.rIcon))
-                        .background(Color.White.copy(alpha = 0.08f)),
-                    contentAlignment = Alignment.Center
-                ) { QIcon(face.icon, size = 22.dp, tint = T.text2OnDark) }
-                Spacer(Modifier.width(T.md))
-                face.stage?.let { DarkStageChip(it) }
+            Cover(face.title, face.icon, face.stage?.tone())
+            Spacer(Modifier.height(T.md))
+            face.stage?.let {
+                DarkStageChip(it)
+                Spacer(Modifier.height(T.sm))
             }
-
-            Spacer(Modifier.height(T.lg))
             Q(face.title, Type.title, T.textOnDark, 3)
             if (face.subtitle.isNotBlank()) {
                 Spacer(Modifier.height(T.xs))

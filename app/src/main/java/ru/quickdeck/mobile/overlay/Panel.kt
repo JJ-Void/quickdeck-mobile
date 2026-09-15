@@ -42,6 +42,7 @@ import ru.quickdeck.mobile.core.Actions
 import ru.quickdeck.mobile.data.Contract
 import ru.quickdeck.mobile.data.Db
 import ru.quickdeck.mobile.data.Employee
+import ru.quickdeck.mobile.data.HandoverStatus
 import ru.quickdeck.mobile.data.Party
 import ru.quickdeck.mobile.data.Section
 import ru.quickdeck.mobile.data.Site
@@ -245,39 +246,6 @@ private fun DeckFrame(content: @Composable ColumnScope.() -> Unit) {
 
 // --- лист снизу (оставлен для поиска и форм) -------------------------------
 
-@Composable
-private fun SheetLayer(content: @Composable ColumnScope.() -> Unit) {
-    val maxH = (LocalConfiguration.current.screenHeightDp * 0.74f).dp
-
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-        val appear = remember { MutableTransitionState(false).apply { targetState = true } }
-        AnimatedVisibility(
-            visibleState = appear,
-            enter = slideInVertically(tween(T.MS_SCREEN, easing = T.curve)) { it } +
-                fadeIn(tween(T.MS_STATE, easing = T.curve)),
-            exit = slideOutVertically(tween(T.MS_EXIT, easing = T.curve)) { it } +
-                fadeOut(tween(T.MS_EXIT, easing = T.curve))
-        ) {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = maxH)
-                    .clip(RoundedCornerShape(topStart = T.rSheet, topEnd = T.rSheet))
-                    .background(T.surfaceDark)
-                    .border(
-                        1.dp, T.panelEdge,
-                        RoundedCornerShape(topStart = T.rSheet, topEnd = T.rSheet)
-                    )
-                    .padding(bottom = 28.dp)
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null
-                    ) { /* клики по листу не должны закрывать панель */ },
-                content = content
-            )
-        }
-    }
-}
 
 @Composable
 private fun Grip() {
@@ -294,210 +262,9 @@ private fun Grip() {
 
 // --- список раздела ------------------------------------------------------
 
-@Composable
-private fun ColumnScope.BrowseSheet(db: Db, host: OverlayHost) {
-    val section = OverlayState.section
-    Grip()
-
-    Row(
-        Modifier.fillMaxWidth().padding(start = T.lg, end = T.sm, top = T.md),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(Modifier.weight(1f)) {
-            Q(section.title, Type.title, T.textOnDark, 1)
-            Q("${db.count(section)} в реестре", Type.caption, T.text2OnDark, 1)
-        }
-        RoundAction(Ic.search, "Найти") { host.openSearch() }
-        Spacer(Modifier.width(T.xs))
-        RoundAction(Ic.plus, "Добавить", accent = true) { host.openForm(section, null) }
-        Spacer(Modifier.width(T.xs))
-        RoundAction(Ic.close, "Закрыть") { OverlayState.close() }
-    }
-
-    Spacer(Modifier.height(T.md))
-    SectionTabs(db, section)
-    Spacer(Modifier.height(T.md))
-
-    val empty = db.count(section) == 0
-    if (empty) {
-        Column(
-            Modifier.fillMaxWidth().padding(horizontal = T.lg, vertical = T.xl),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            QIcon(Ic.layers, size = 40.dp, tint = T.text2OnDark, stroke = 1.5f)
-            Spacer(Modifier.height(T.md))
-            Q("Здесь пока пусто", Type.heading, T.textOnDark)
-            Spacer(Modifier.height(T.xs))
-            Q("Заведи первую запись — она появится тут", Type.small, T.text2OnDark)
-        }
-        return
-    }
-
-    LazyColumn(
-        Modifier.fillMaxWidth(),
-        contentPadding = PaddingValues(start = T.lg, end = T.lg, bottom = T.lg),
-        verticalArrangement = Arrangement.spacedBy(T.sm)
-    ) {
-        when (section) {
-            Section.SITES -> items(db.liveSites, key = { it.id }) { s ->
-                val active = db.activeContractsOfSite(s.id).size
-                PanelRow(
-                    title = s.name.ifBlank { "Без названия" },
-                    subtitle = listOfNotNull(
-                        db.customer(s.customerId)?.name,
-                        if (active > 0) "$active в работе" else null
-                    ).joinToString(" · "),
-                    icon = Ic.sites,
-                    stage = db.stageOfSite(s.id),
-                    trailing = if (s.progress > 0) "${s.progress} %" else null
-                ) { OverlayState.openCard(CardRef(Section.SITES, s.id)) }
-            }
-
-            Section.CONTRACTS -> items(db.liveContracts, key = { it.id }) { c ->
-                val st = shownStatus(c)
-                PanelRow(
-                    title = c.label(db.site(c.siteId)?.name),
-                    subtitle = listOfNotNull(
-                        st.label,
-                        c.end.takeIf { it.isNotBlank() }?.let { "до ${dateShort(it)}" }
-                    ).joinToString(" · "),
-                    icon = Ic.contracts,
-                    stage = st.stage,
-                    trailing = if (c.amount != 0L) money(c.amount) else null
-                ) { OverlayState.openCard(CardRef(Section.CONTRACTS, c.id)) }
-            }
-
-            Section.CUSTOMERS -> items(db.liveCustomers, key = { it.id }) { p ->
-                PanelRow(
-                    title = p.name.ifBlank { "Без названия" },
-                    subtitle = listOfNotNull(
-                        p.inn.takeIf { it.isNotBlank() }?.let { "ИНН $it" },
-                        p.phone.takeIf { it.isNotBlank() }
-                    ).joinToString(" · "),
-                    icon = Ic.customers,
-                    stage = null,
-                    trailing = db.sitesOfCustomer(p.id).size.takeIf { it > 0 }?.toString()
-                ) { OverlayState.openCard(CardRef(Section.CUSTOMERS, p.id)) }
-            }
-
-            Section.STAFF -> items(db.liveEmployees, key = { it.id }) { e ->
-                PanelRow(
-                    title = e.name.ifBlank { "Без имени" },
-                    subtitle = listOf(e.position, e.department).filter { it.isNotBlank() }.joinToString(" · "),
-                    icon = Ic.staff,
-                    stage = null,
-                    trailing = null
-                ) { OverlayState.openCard(CardRef(Section.STAFF, e.id)) }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SectionTabs(db: Db, current: Section) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = T.lg),
-        horizontalArrangement = Arrangement.spacedBy(T.sm)
-    ) {
-        Section.entries.forEach { s ->
-            val selected = s == current
-            Pressable({ OverlayState.openBrowse(s) }) {
-                Row(
-                    Modifier
-                        .heightIn(min = 36.dp)
-                        .clip(RoundedCornerShape(percent = 50))
-                        .background(if (selected) T.accent.fill else Color.White.copy(alpha = 0.07f))
-                        .padding(horizontal = T.md),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Q(s.title, Type.caption, if (selected) Color.White else T.text2OnDark, 1)
-                    Spacer(Modifier.width(T.xs))
-                    Q(
-                        db.count(s).toString(),
-                        Type.caption,
-                        if (selected) Color.White.copy(alpha = 0.7f) else T.text2OnDark.copy(alpha = 0.6f)
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun PanelRow(
-    title: String,
-    subtitle: String,
-    icon: String,
-    stage: Stage?,
-    trailing: String?,
-    onClick: () -> Unit
-) {
-    Pressable(onClick, Modifier.fillMaxWidth()) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(T.rCard))
-                .background(T.panelCard)
-                .border(1.dp, T.panelEdge, RoundedCornerShape(T.rCard))
-                .padding(T.md),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                Modifier
-                    .size(38.dp)
-                    .clip(RoundedCornerShape(T.rIcon))
-                    .background(Color.White.copy(alpha = 0.07f)),
-                contentAlignment = Alignment.Center
-            ) { QIcon(icon, size = 19.dp, tint = T.text2OnDark) }
-
-            Spacer(Modifier.width(T.md))
-            Column(Modifier.weight(1f)) {
-                Q(title, Type.heading, T.textOnDark, 1)
-                if (subtitle.isNotBlank()) {
-                    Q(subtitle, Type.caption, T.text2OnDark, 1)
-                }
-            }
-            Column(horizontalAlignment = Alignment.End) {
-                stage?.let { DarkStageChip(it) }
-                trailing?.let {
-                    if (stage != null) Spacer(Modifier.height(T.xs))
-                    Q(it, Type.smallNum, T.text2OnDark, 1)
-                }
-            }
-        }
-    }
-}
 
 // --- карточка ------------------------------------------------------------
 
-@Composable
-private fun ColumnScope.CardSheet(db: Db, host: OverlayHost) {
-    val ref = OverlayState.card ?: run { Missing(); return }
-    Grip()
-
-    Row(
-        Modifier.fillMaxWidth().padding(start = T.sm, end = T.sm, top = T.sm),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Pressable({ OverlayState.backFromCard() }) {
-            Box(Modifier.size(T.touchMin), contentAlignment = Alignment.Center) {
-                QIcon(Ic.chevronLeft, size = 22.dp, tint = T.textOnDark)
-            }
-        }
-        Q(ref.section.one, Type.caption, T.text2OnDark, 1, Modifier.weight(1f))
-        RoundAction(Ic.close, "Закрыть") { OverlayState.close() }
-    }
-
-    when (ref.section) {
-        Section.SITES -> db.site(ref.id)?.let { SiteBody(it, db, host) } ?: Missing()
-        Section.CONTRACTS -> db.contract(ref.id)?.let { ContractBody(it, db, host) } ?: Missing()
-        Section.CUSTOMERS -> db.customer(ref.id)?.let { PartyBody(it, db, host) } ?: Missing()
-        Section.STAFF -> db.employee(ref.id)?.let { StaffBody(it, db, host) } ?: Missing()
-    }
-}
 
 @Composable
 private fun Missing() {
@@ -667,6 +434,51 @@ internal fun ColumnScope.ContractBody(c: Contract, db: Db, host: OverlayHost) {
                         Spacer(Modifier.width(T.sm))
                         Q(p.condition, Type.small, T.textOnDark, 2, Modifier.weight(1f))
                         Q("${trimNumber(p.share * 100)} %", Type.smallNum, T.text2OnDark, 1)
+                    }
+                }
+                Spacer(Modifier.height(T.xs))
+            }
+        }
+
+        // Вехи сдачи: модель их хранила и обмен возил, а показать было негде.
+        val milestones = db.handoversOfContract(c.id)
+        if (milestones.isNotEmpty()) {
+            Spacer(Modifier.height(T.lg))
+            val done = milestones.count { it.status == HandoverStatus.ACCEPTED }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Q("Сдача", Type.caption, T.text2OnDark, 1, Modifier.weight(1f))
+                Q("$done из ${milestones.size}", Type.caption, T.text2OnDark, 1)
+            }
+            Spacer(Modifier.height(T.sm))
+            milestones.forEach { h ->
+                val late = h.fact.isBlank() && overdueText(h.plan) != null
+                val tone = when {
+                    h.status == HandoverStatus.ACCEPTED -> T.success
+                    late -> T.danger
+                    else -> T.muted
+                }
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(T.rControl))
+                        .background(T.panelCard)
+                        .padding(T.md),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    QIcon(
+                        if (h.status == HandoverStatus.ACCEPTED) Ic.check else Ic.clock,
+                        size = 16.dp,
+                        tint = tone.fill,
+                        stroke = 2f
+                    )
+                    Spacer(Modifier.width(T.sm))
+                    Column(Modifier.weight(1f)) {
+                        Q(h.what, Type.small, T.textOnDark, 2)
+                        Q(h.status.label, Type.caption, tone.fill, 1)
+                    }
+                    val when1 = h.fact.takeIf { it.isNotBlank() } ?: h.plan
+                    if (when1.isNotBlank()) {
+                        Q(dateShort(when1), Type.caption, T.text2OnDark, 1)
                     }
                 }
                 Spacer(Modifier.height(T.xs))
