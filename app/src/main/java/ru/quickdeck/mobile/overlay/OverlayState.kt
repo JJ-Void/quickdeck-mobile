@@ -12,9 +12,6 @@ import kotlin.math.roundToInt
 /** Ссылка на запись — раздел плюс идентификатор, больше ничего не нужно. */
 data class CardRef(val section: Section, val id: String)
 
-/** Уровни колоды: чем глубже, тем конкретнее. */
-enum class DeckLevel { CATEGORIES, SUMMARY, GROUPS, ITEMS, CARD }
-
 /** Что сейчас на экране поверх всего. */
 enum class PanelMode {
     /** Виден только пузырь. Окно панели не принимает касания вообще. */
@@ -103,19 +100,12 @@ object OverlayState {
         private set
 
     /**
-     * Уровень колоды. Реестр читается вглубь: разделы → записи раздела →
-     * сама запись. Вбок листаются соседи по текущему уровню.
-     */
-    var deck by mutableStateOf(DeckLevel.CATEGORIES)
-        private set
-
-    /**
-     * Выбранная группа внутри раздела: стадия для договоров, отдел для
-     * сотрудников, заказчик для объектов. Пусто — группы не выбирали.
+     * Выбранный фильтр внутри раздела: стадия для договоров, отдел для
+     * сотрудников, заказчик для объектов. Пусто — показываем всё.
      *
-     * Слой групп нужен ровно затем, чтобы не листать полсотни карточек:
-     * сначала «что за пачка», потом «что внутри». Если групп меньше двух,
-     * слой пропускается — выбирать не из чего.
+     * Это именно фильтр, а не уровень навигации: он снимается тем же тапом,
+     * которым поставлен, и не заставляет возвращаться назад ради соседней
+     * стадии.
      */
     var group by mutableStateOf<String?>(null)
         private set
@@ -197,93 +187,35 @@ object OverlayState {
         }
     }
 
-    /**
-     * Колода открылась с общего уровня: так делает тап по пузырю, когда
-     * заранее неизвестно, за чем человек пришёл.
-     */
+    /** Панель открылась списком текущего раздела. */
     fun openDeck() {
         card = null
-        deck = DeckLevel.CATEGORIES
-        group = null
         mode = PanelMode.BROWSE
         host?.panelVisible(true)
         host?.panelBlur(true)
         host?.panelTouchable(true)
     }
 
-    /** Центр колоды сменился — раздел стал текущим, но уровень тот же. */
-    fun focusSection(value: Section, host: OverlayHost?) {
+    /** Смена раздела сегментом: фильтр и открытая запись к нему не относятся. */
+    fun pickSection(value: Section) {
         if (section == value) return
         section = value
+        group = null
+        card = null
         host?.buzz(6)
     }
 
-    /** Шаг вглубь: группы раздела, а если их нет — сразу записи. */
-    fun openItems(value: Section, hasGroups: Boolean) {
-        section = value
-        card = null
-        group = null
-        deck = if (hasGroups) DeckLevel.GROUPS else DeckLevel.ITEMS
-    }
-
-    /** Сводка — отдельный уровень: считать её как «раздел» неправильно. */
-    fun openSummary() {
-        card = null
-        group = null
-        deck = DeckLevel.SUMMARY
-    }
-
-    /** Группа выбрана — дальше её записи. */
-    fun openGroup(value: String) {
-        group = value
-        card = null
-        deck = DeckLevel.ITEMS
-    }
-
-    /** Центр на уровне групп: запоминаем, но вглубь не уходим. */
-    fun focusGroup(value: String, host: OverlayHost?) {
+    /** Поставить или снять фильтр. null — показать весь раздел. */
+    fun pickGroup(value: String?) {
         if (group == value) return
         group = value
-        host?.buzz(6)
-    }
-
-    /** Центр колоды на уровне карточек — запись меняется без ухода назад. */
-    fun focusCard(value: Section, id: String, host: OverlayHost?) {
-        if (card?.id == id) return
-        card = CardRef(value, id)
-        when (value) {
-            Section.SITES -> {
-                contextSiteId = id
-                contextContractId = null
-            }
-            Section.CONTRACTS -> contextContractId = id
-            else -> Unit
-        }
-        host?.buzz(6)
-    }
-
-    /** Шаг назад по уровням. С верхнего уровня выход закрывает панель. */
-    fun deckBack(hasGroups: Boolean = true) {
-        when (deck) {
-            DeckLevel.SUMMARY -> deck = DeckLevel.CATEGORIES
-            DeckLevel.CARD -> deck = DeckLevel.ITEMS
-            DeckLevel.ITEMS -> {
-                card = null
-                deck = if (hasGroups) DeckLevel.GROUPS else DeckLevel.CATEGORIES
-            }
-            DeckLevel.GROUPS -> {
-                group = null
-                deck = DeckLevel.CATEGORIES
-            }
-            DeckLevel.CATEGORIES -> close()
-        }
+        host?.buzz(4)
     }
 
     fun openBrowse(value: Section) {
         section = value
         card = null
         group = null
-        deck = DeckLevel.ITEMS
         mode = PanelMode.BROWSE
         host?.panelVisible(true)
         host?.panelBlur(true)
@@ -296,8 +228,8 @@ object OverlayState {
      */
     fun openCard(ref: CardRef) {
         // Переход из чужого раздела — например, из карточки объекта прямо в
-        // договор. Пачка тут своя, старая не подходит: сбрасываем, и колода
-        // покажет соседей по всему разделу, а не по прежней группе.
+        // договор. Фильтр там свой, старый не подходит: снимаем его, иначе
+        // после возврата список окажется пустым.
         if (ref.section != section) group = null
         card = ref
         section = ref.section
@@ -309,16 +241,19 @@ object OverlayState {
             Section.CONTRACTS -> contextContractId = ref.id
             else -> Unit          // заказчик и сотрудник объект не задают
         }
-        deck = DeckLevel.CARD
         mode = PanelMode.CARD
         host?.panelVisible(true)
         host?.panelBlur(true)
         host?.panelTouchable(true)
     }
 
-    fun backFromCard() = deckBack()
+    /** Назад из карточки — в список раздела, а не наружу. */
+    fun backFromCard() {
+        card = null
+        mode = PanelMode.BROWSE
+    }
 
-    /** Тап по пузырю: колода с общего уровня — разделы веером по центру. */
+    /** Тап по пузырю: рабочий стол с тем разделом, где остановились. */
     fun openLast() = openDeck()
 
     fun close() {

@@ -109,9 +109,10 @@ fun PanelRoot(host: OverlayHost) {
 
         when (mode) {
             PanelMode.WHEEL -> WheelLayer(db)
-            // Реестр живёт колодой по центру экрана: уровни вглубь, соседи
-            // вбок. Лист снизу показывал один уровень и прятал, где ты.
-            PanelMode.BROWSE, PanelMode.CARD -> DeckFrame { DeckLayer(db, host) }
+            // Реестр живёт плотным списком: раздел сегментом, срез фильтром,
+            // запись — на месте. Колода листалась вбок и спорила с системным
+            // жестом «назад», а на экран помещала одну запись вместо десяти.
+            PanelMode.BROWSE, PanelMode.CARD -> DeckFrame { WorkbenchLayer(db, host) }
             PanelMode.HIDDEN -> Unit
         }
     }
@@ -218,8 +219,9 @@ internal fun sectionIcon(s: Section): String = when (s) {
 // --- рамка колоды ---------------------------------------------------------
 
 /**
- * Колода занимает экран целиком и выезжает снизу вверх одним движением:
- * так видно, что она пришла от пузыря, а не подменила собой приложение.
+ * Рабочий стол занимает экран целиком и выезжает снизу вверх одним
+ * движением: так видно, что он пришёл от пузыря, а не подменил собой
+ * приложение.
  */
 @Composable
 private fun DeckFrame(content: @Composable ColumnScope.() -> Unit) {
@@ -244,36 +246,7 @@ private fun DeckFrame(content: @Composable ColumnScope.() -> Unit) {
     }
 }
 
-// --- лист снизу (оставлен для поиска и форм) -------------------------------
-
-
-@Composable
-private fun Grip() {
-    Box(Modifier.fillMaxWidth().padding(top = T.md), contentAlignment = Alignment.Center) {
-        Box(
-            Modifier
-                .width(36.dp)
-                .height(4.dp)
-                .clip(RoundedCornerShape(2.dp))
-                .background(Color.White.copy(alpha = 0.18f))
-        )
-    }
-}
-
-// --- список раздела ------------------------------------------------------
-
-
 // --- карточка ------------------------------------------------------------
-
-
-@Composable
-private fun Missing() {
-    Column(Modifier.fillMaxWidth().padding(T.xl), horizontalAlignment = Alignment.CenterHorizontally) {
-        Q("Запись не найдена", Type.heading, T.textOnDark)
-        Spacer(Modifier.height(T.xs))
-        Q("Возможно, её удалили в таблице", Type.small, T.text2OnDark)
-    }
-}
 
 @Composable
 internal fun ColumnScope.SiteBody(site: Site, db: Db, host: OverlayHost) {
