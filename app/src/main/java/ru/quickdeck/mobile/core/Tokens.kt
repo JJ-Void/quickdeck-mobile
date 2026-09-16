@@ -5,8 +5,8 @@ import androidx.compose.animation.core.Easing
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
-/** Р Р°РґРёСѓСЃ СЂР°Р·РјС‹С‚РёСЏ Р·Р° РїР°РЅРµР»СЊСЋ, dp. */
-const val PANEL_BLUR_DP = 28
+/** Радиус размытия за панелью, dp. */
+const val PANEL_BLUR_DP = 34
 
 /**
  * Раздел 12 DESIGN-SYSTEM.md — токены как есть, без подбора похожих значений.
@@ -25,30 +25,41 @@ object T {
     val text2 = Color(0xFF5B6270)
     val text3 = Color(0xFF8A93A1)
 
-    val textOnDark = Color(0xFFF2F4F7)
-    val text2OnDark = Color(0xFF9AA4B2)
+    // Имена остались с тех пор, когда панель была тёмной. Панель стала
+    // светлой, а разметка опирается на эти токены — переименовывать её
+    // ради названий незачем, значения важнее имён.
+    val textOnDark = Color(0xFF10131A)
+    val text2OnDark = Color(0xFF6B7482)
 
     val hairline = Color(0x1A121418)          // #121418 при 10 %
-    val hairlineDark = Color(0x1FFFFFFF)      // #FFFFFF при 12 %
+    val hairlineDark = Color(0x14121418)      // тонкая линия на светлом стекле
     val scrim = Color(0x990A0C10)             // #0A0C10 при 60 %
 
     // --- панель поверх чужих приложений ---------------------------------
-    // Панель живёт на любом фоне: на светлой галерее, на тёмной карте, на
-    // игре. Светлая поверхность там читается через раз, тёмное стекло —
-    // всегда. Поэтому оверлей тёмный, а само приложение остаётся светлым.
     /**
-     * Android СѓРјРµРµС‚ СЂР°Р·РјС‹РІР°С‚СЊ С‚Рѕ, С‡С‚Рѕ Р»РµР¶РёС‚ Р·Р° РѕРєРЅРѕРј (FLAG_BLUR_BEHIND),
-     * РЅР°С‡РёРЅР°СЏ СЃ 12. РўР°Рј, РіРґРµ СЌС‚Рѕ РµСЃС‚СЊ, РїРѕРІРµСЂС…РЅРѕСЃС‚Рё РјРѕР¶РЅРѕ РґРµР»Р°С‚СЊ СЂРµР°Р»СЊРЅРѕ
-     * РїСЂРѕР·СЂР°С‡РЅС‹РјРё - Р·Р° РЅРёРјРё РІРёРґРЅРѕ СЂР°Р·РјС‹С‚С‹Р№ СЌРєСЂР°РЅ, Рё РїР°РЅРµР»СЊ С‡РёС‚Р°РµС‚СЃСЏ РєР°Рє
-     * СЃС‚РµРєР»Рѕ. Р“РґРµ СЂР°Р·РјС‹С‚РёСЏ РЅРµС‚, С‚Р° Р¶Рµ РїСЂРѕР·СЂР°С‡РЅРѕСЃС‚СЊ РІС‹РіР»СЏРґРµР»Р° Р±С‹ РіСЂСЏР·СЊСЋ,
-     * РїРѕСЌС‚РѕРјСѓ РїРѕРІРµСЂС…РЅРѕСЃС‚Рё СЃС‚Р°РЅРѕРІСЏС‚СЃСЏ РїР»РѕС‚РЅС‹РјРё.
+     * Панель — светящееся стекло, а не тёмная плита.
+     *
+     * Размытие (FLAG_BLUR_BEHIND, Android 12+) даёт под ней настоящий
+     * матовый свет: за поверхностями видно размытый экран, и панель
+     * выглядит включённой. Где размытия нет, та же прозрачность смотрелась
+     * бы грязью, поэтому поверхности становятся плотными.
      */
     val blurSupported = android.os.Build.VERSION.SDK_INT >= 31
 
-    val panelScrim = if (blurSupported) Color(0xA6070910) else Color(0xE60A0C10)        // затемнение под панелью, 84 %
-    val panelCard = if (blurSupported) Color(0x8A222833) else Color(0xC21F232B)         // невыбранная карточка, 70 %
-    val panelRaised = if (blurSupported) Color(0xC42A313C) else Color(0xF2242932)       // выбранная карточка, 95 %
-    val panelEdge = Color(0x33FFFFFF)         // граница на тёмном, 14 %
+    val panelScrim = if (blurSupported) Color(0xBCEFF1F4) else Color(0xF4F3F5F8)
+    val panelCard = if (blurSupported) Color(0x8FFFFFFF) else Color(0xF7FFFFFF)
+    val panelRaised = if (blurSupported) Color(0xF2FFFFFF) else Color(0xFFFFFFFF)
+    val panelEdge = Color(0x1A121418)
+
+    /**
+     * Свет — главный материал интерфейса. Тонкая линия, ореол вокруг
+     * активного элемента, тёплый янтарь на действии. Холодный луч —
+     * для состояния связи и живых данных.
+     */
+    val glow = Color(0xFFFF7A1A)
+    val glowSoft = Color(0x2EFF7A1A)
+    val beam = Color(0xFF3AA0FF)
+    val beamSoft = Color(0x243AA0FF)
 
     // --- три версии каждого цвета: заливка / текст / плашка -------------
     data class Tone(val fill: Color, val ink: Color, val chip: Color)
@@ -59,6 +70,9 @@ object T {
     val danger = Tone(Color(0xFFFF6B7A), Color(0xFFC22B41), Color(0xFFFFEAEC))
     val info = Tone(Color(0xFFA78BFA), Color(0xFF6D4AFF), Color(0xFFF3EFFE))
     val muted = Tone(Color(0xFF9AA4B2), Color(0xFF5B6270), Color(0xFFF1F2F4))
+
+    /** Действие — янтарь: одно горячее пятно на весь спокойный экран. */
+    val action = Tone(glow, Color(0xFFB4530A), Color(0xFFFFF0E4))
 
     // --- сетка: шаг 4 ---------------------------------------------------
     val xs = 4.dp

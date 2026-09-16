@@ -53,6 +53,7 @@ import ru.quickdeck.mobile.SheetActivity
 import ru.quickdeck.mobile.data.Section
 import ru.quickdeck.mobile.data.Store
 import ru.quickdeck.mobile.data.Sync
+import ru.quickdeck.mobile.data.Watcher
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 
@@ -240,6 +241,7 @@ class BubbleService : Service(), OverlayHost {
         excludeFromSystemGestures()
 
         if (Store.autoSync && Store.syncConfigured) syncQuietly()
+        startWatching()
     }
 
     private fun clampX(value: Int, bounds: Rect, size: Int) =
@@ -482,6 +484,23 @@ class BubbleService : Service(), OverlayHost {
         startActivity(SheetActivity.search(this))
     }
 
+    /**
+     * Фоновый цикл: пока нить на экране, система сама ходит в таблицу и
+     * сама показывает утреннюю сводку. Ничего не просит и ничего не ждёт —
+     * человек открывает панель уже на свежих данных.
+     */
+    private fun startWatching() {
+        scope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(Watcher.SYNC_PERIOD_MS)
+                if (Watcher.shouldSync()) syncQuietly()
+                if (Watcher.shouldDigest()) {
+                    runCatching { Watcher.notify(this@BubbleService, Store.db.value) }
+                }
+            }
+        }
+    }
+
     override fun openSettings() {
         OverlayState.close()
         val intent = packageManager.getLaunchIntentForPackage(packageName)
@@ -514,7 +533,9 @@ class BubbleService : Service(), OverlayHost {
         if (!Store.syncConfigured || OverlayState.syncing) return
         scope.launch {
             OverlayState.syncing = true
+            Store.isSyncing = true
             val result = withContext(Dispatchers.IO) { Sync.run() }
+            Store.isSyncing = false
             OverlayState.syncing = false
             OverlayState.freshCount = result.getOrNull()?.fromTable ?: 0
         }
