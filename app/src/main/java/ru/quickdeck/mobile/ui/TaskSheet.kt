@@ -131,7 +131,7 @@ fun ColumnScope.TaskSheet(
                 // иначе правка руками молча снимала бы выделение.
                 val on = templateId == t.id
                 val fill by animateColorAsState(
-                    targetValue = if (on) T.accent.chip else T.surface,
+                    targetValue = if (on) T.action.chip else T.surface,
                     animationSpec = tween(T.MS_PRESS, easing = T.curve),
                     label = "tplFill"
                 )
@@ -147,17 +147,17 @@ fun ColumnScope.TaskSheet(
                             .background(fill)
                             .border(
                                 if (on) 1.5.dp else 1.dp,
-                                if (on) T.accent.fill else T.hairline,
+                                if (on) T.action.fill else T.hairline,
                                 RoundedCornerShape(percent = 50)
                             )
                             .padding(horizontal = T.md),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         if (on) {
-                            QIcon(Ic.check, size = 16.dp, tint = T.accent.ink, stroke = 2f)
+                            QIcon(Ic.check, size = 16.dp, tint = T.action.ink, stroke = 2f)
                             Spacer(Modifier.width(T.xs))
                         }
-                        Q(t.title, Type.caption, if (on) T.accent.ink else T.text2, 1)
+                        Q(t.title, Type.caption, if (on) T.action.ink else T.text2, 1)
                     }
                 }
             }
@@ -223,7 +223,7 @@ fun ColumnScope.TaskSheet(
         if (unknown.isNotEmpty()) {
             Spacer(Modifier.height(T.sm))
             Notice(
-                T.danger,
+                T.dangerTone,
                 "Неизвестные переменные: " + unknown.joinToString(", ") { "{$it}" },
                 "Они уйдут как есть. Известные: " + templateVars.joinToString(", ") { "{$it}" }
             )
@@ -237,9 +237,9 @@ fun ColumnScope.TaskSheet(
                 Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(T.rControl))
-                    .background(T.accent.chip)
+                    .background(T.action.chip)
                     .padding(T.md)
-            ) { Q(message, Type.body, T.accent.ink) }
+            ) { Q(message, Type.body, T.action.ink) }
         }
 
         Spacer(Modifier.height(T.lg))
@@ -274,7 +274,7 @@ fun ColumnScope.TaskSheet(
                         "email" -> "Почта"
                         else -> chat.kind
                     }
-                    ActionPill(if (chat.kind == "email") Ic.mail else Ic.chat, label, T.accent) {
+                    ActionPill(if (chat.kind == "email") Ic.mail else Ic.chat, label, T.action) {
                         deliver(chat, employee.phones.firstOrNull())
                     }
                 }
@@ -373,7 +373,7 @@ fun ColumnScope.TemplatesSheet(db: Db, onClose: () -> Unit) {
             if (bad.isNotEmpty()) {
                 Spacer(Modifier.height(T.md))
                 Notice(
-                    T.danger,
+                    T.dangerTone,
                     "Неизвестные переменные: " + bad.joinToString(", ") { "{$it}" },
                     "Проверь написание — подставляются только известные"
                 )
@@ -407,13 +407,13 @@ fun ColumnScope.TemplatesSheet(db: Db, onClose: () -> Unit) {
                     .fillMaxWidth()
                     .heightIn(min = T.touchMin)
                     .clip(RoundedCornerShape(T.rCard))
-                    .background(T.accent.chip)
+                    .background(T.action.chip)
                     .padding(horizontal = T.md),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                QIcon(Ic.plus, size = 18.dp, tint = T.accent.ink, stroke = 2f)
+                QIcon(Ic.plus, size = 18.dp, tint = T.action.ink, stroke = 2f)
                 Spacer(Modifier.width(T.sm))
-                Q("Новый шаблон", Type.heading, T.accent.ink, 1)
+                Q("Новый шаблон", Type.heading, T.action.ink, 1)
             }
         }
         Spacer(Modifier.height(T.md))
@@ -454,9 +454,9 @@ fun ColumnScope.TemplatesSheet(db: Db, onClose: () -> Unit) {
                                 Box(
                                     Modifier
                                         .clip(RoundedCornerShape(percent = 50))
-                                        .background(T.accent.chip)
+                                        .background(T.action.chip)
                                         .padding(horizontal = T.sm, vertical = 2.dp)
-                                ) { Q(v, Type.caption, T.accent.ink, 1) }
+                                ) { Q(v, Type.caption, T.action.ink, 1) }
                             }
                         }
                     }
@@ -484,11 +484,11 @@ fun ColumnScope.TemplatesSheet(db: Db, onClose: () -> Unit) {
                             .size(T.touchMin)
                             .padding(T.xs)
                             .clip(RoundedCornerShape(T.rIcon))
-                            .background(if (armed == t.id) T.danger.chip else Color.Transparent),
+                            .background(if (armed == t.id) T.dangerTone.chip else Color.Transparent),
                         contentAlignment = Alignment.Center
                     ) {
                         if (armed == t.id) {
-                            Q("Удалить?", Type.caption, T.danger.ink, 1)
+                            Q("Удалить?", Type.caption, T.dangerTone.ink, 1)
                         } else {
                             QIcon(Ic.trash, size = 18.dp, tint = T.text2)
                         }

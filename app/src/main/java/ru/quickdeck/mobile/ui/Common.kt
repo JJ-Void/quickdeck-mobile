@@ -46,11 +46,11 @@ import ru.quickdeck.mobile.data.Status
 /** Цвет статуса берётся от стадии: сорок один оттенок никто не различит. */
 fun Stage.tone(): T.Tone = when (this) {
     Stage.LEAD -> T.info
-    Stage.CONTRACT -> T.accent
-    Stage.PRODUCTION -> T.accent
+    Stage.CONTRACT -> T.action
+    Stage.PRODUCTION -> T.action
     Stage.ACCEPTANCE -> T.warning
     Stage.PAYMENT -> T.success
-    Stage.PROBLEM -> T.danger
+    Stage.PROBLEM -> T.dangerTone
 }
 
 fun Status.tone(): T.Tone = stage.tone()
@@ -118,7 +118,7 @@ fun PrimaryButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifi
                 .fillMaxWidth()
                 .heightIn(min = T.touchMin)
                 .clip(RoundedCornerShape(T.rControl))
-                .background(if (enabled) T.accent.fill else T.muted.chip),
+                .background(if (enabled) T.action.fill else T.muted.chip),
             contentAlignment = Alignment.Center
         ) { Q(text, Type.heading, if (enabled) Color.White else T.text3) }
     }
@@ -165,20 +165,20 @@ fun Field(
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     val line = when {
-        warn -> T.danger.fill
-        focused -> T.accent.fill
+        warn -> T.dangerTone.fill
+        focused -> T.action.fill
         else -> T.hairline
     }
 
     Column(modifier.fillMaxWidth()) {
-        Q(label, Type.caption, if (warn) T.danger.ink else if (focused) T.accent.ink else T.text3)
+        Q(label, Type.caption, if (warn) T.dangerTone.ink else if (focused) T.action.ink else T.text3)
         Spacer(Modifier.height(T.xs))
         BasicTextField(
             value = value,
             onValueChange = onChange,
             singleLine = singleLine,
             textStyle = Type.body.copy(color = T.text),
-            cursorBrush = SolidColor(T.accent.fill),
+            cursorBrush = SolidColor(T.action.fill),
             interactionSource = interaction,
             keyboardOptions = KeyboardOptions(
                 keyboardType = if (numeric) KeyboardType.Number else KeyboardType.Text,
@@ -209,7 +209,7 @@ fun Field(
         )
         if (hint != null) {
             Spacer(Modifier.height(T.xs))
-            Q(hint, Type.caption, if (warn) T.danger.ink else T.text3)
+            Q(hint, Type.caption, if (warn) T.dangerTone.ink else T.text3)
         }
     }
 }
@@ -325,7 +325,7 @@ fun <E> WheelPicker(
     label: (E) -> String,
     onSelect: (E) -> Unit,
     modifier: Modifier = Modifier,
-    accent: (E) -> Color = { T.accent.fill },
+    accent: (E) -> Color = { T.action.fill },
     rowHeight: Dp = 44.dp,
     visibleRows: Int = 5
 ) {
@@ -438,7 +438,7 @@ fun SearchBox(query: String, onChange: (String) -> Unit) {
                     onValueChange = onChange,
                     singleLine = true,
                     textStyle = Type.body.copy(color = T.text),
-                    cursorBrush = SolidColor(T.accent.fill),
+                    cursorBrush = SolidColor(T.action.fill),
                     modifier = Modifier.fillMaxWidth()
                 )
             }
@@ -496,8 +496,8 @@ fun SendButton(
 
     val tone = when (state.phase) {
         SendPhase.SENT -> T.success
-        SendPhase.FAILED -> T.danger
-        else -> T.accent
+        SendPhase.FAILED -> T.dangerTone
+        else -> T.action
     }
     val text = when (state.phase) {
         SendPhase.SENDING -> "Отправляем…"

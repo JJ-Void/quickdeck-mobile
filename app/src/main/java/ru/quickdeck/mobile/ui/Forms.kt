@@ -394,8 +394,8 @@ fun PartyForm(
                 Modifier.fillMaxWidth().heightIn(min = T.touchMin),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Q(if (details) "Свернуть реквизиты" else "Банк и реквизиты", Type.small, T.accent.ink, 1, Modifier.weight(1f))
-                QIcon(if (details) Ic.chevronLeft else Ic.chevronRight, size = 18.dp, tint = T.accent.ink)
+                Q(if (details) "Свернуть реквизиты" else "Банк и реквизиты", Type.small, T.action.ink, 1, Modifier.weight(1f))
+                QIcon(if (details) Ic.chevronLeft else Ic.chevronRight, size = 18.dp, tint = T.action.ink)
             }
         }
 
@@ -527,12 +527,12 @@ private fun FormShell(
                             .fillMaxWidth()
                             .heightIn(min = T.touchMin)
                             .clip(RoundedCornerShape(T.rControl))
-                            .background(if (confirmDelete) T.danger.chip else T.bg),
+                            .background(if (confirmDelete) T.dangerTone.chip else T.bg),
                         contentAlignment = Alignment.Center
                     ) {
                         Q(
                             if (confirmDelete) "Нажми ещё раз, чтобы удалить" else "Удалить запись",
-                            Type.small, T.danger.ink
+                            Type.small, T.dangerTone.ink
                         )
                     }
                 }

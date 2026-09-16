@@ -75,7 +75,7 @@ private fun Bubble() {
 
         when {
             open -> QIcon(Ic.close, size = 20.dp, tint = T.textOnDark, stroke = 2f)
-            fresh > 0 -> Q(fresh.toString(), Type.amount, T.accent.fill)
+            fresh > 0 -> Q(fresh.toString(), Type.amount, T.action.fill)
             else -> QIcon(Ic.layers, size = 22.dp, tint = T.textOnDark, stroke = 1.9f)
         }
     }
@@ -85,7 +85,7 @@ private fun Bubble() {
 private fun Ring(alpha: Float) {
     Canvas(Modifier.fillMaxSize()) {
         drawCircle(
-            color = T.accent.fill.copy(alpha = 0.55f * alpha),
+            color = T.action.fill.copy(alpha = 0.55f * alpha),
             radius = size.minDimension / 2f - 1.dp.toPx(),
             style = Stroke(width = 1.5.dp.toPx())
         )
@@ -113,7 +113,7 @@ private fun SyncRing() {
             style = Stroke(width = 2.dp.toPx())
         )
         drawArc(
-            color = T.accent.fill,
+            color = T.action.fill,
             startAngle = angle,
             sweepAngle = 90f,
             useCenter = false,

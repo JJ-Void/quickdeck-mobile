@@ -9,22 +9,18 @@ import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.MutableTransitionState
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -33,408 +29,549 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import ru.quickdeck.mobile.core.*
+import ru.quickdeck.mobile.core.Feel
+import ru.quickdeck.mobile.core.Ic
+import ru.quickdeck.mobile.core.Q
+import ru.quickdeck.mobile.core.QIcon
+import ru.quickdeck.mobile.core.T
+import ru.quickdeck.mobile.core.Type
 import ru.quickdeck.mobile.data.*
 import ru.quickdeck.mobile.overlay.BubbleService
 import ru.quickdeck.mobile.ui.*
 
+/**
+ * Приложение целиком.
+ *
+ * Оно основное, а не вспомогательное: пузырь нужен для быстрого доступа,
+ * но всё, что можно сделать через него, можно сделать и здесь.
+ *
+ * Устройство привычное, без изобретений: четыре вкладки внизу, реестр
+ * читается слоями (папка → записи → запись), назад — стрелкой и системным
+ * жестом. Ввод с клавиатуры живёт в SheetActivity: одна форма на всё
+ * приложение вместо трёх похожих.
+ */
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Store.init(this)
         Feel.init(this)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         setContent { AppRoot() }
     }
 
     override fun onStop() {
         super.onStop()
-        // Тихий срез при уходе из приложения: данные живут только здесь.
         Backup.auto(this)
     }
 }
 
-private sealed interface Screen {
-    data object Home : Screen
-    data object Settings : Screen
-    data class SectionList(val section: Section) : Screen
-    data class Card(val section: Section, val id: String) : Screen
-    data class Form(val section: Section, val id: String?) : Screen
+/** Вкладки. Порядок — по частоте, а не по логике сущностей. */
+private enum class Tab(val title: String, val icon: String) {
+    SUMMARY("Сводка", Ic.summary),
+    REGISTRY("Реестр", Ic.folder),
+    TASKS("Задачи", Ic.task),
+    MORE("Ещё", Ic.settings)
+}
+
+/** Слой внутри вкладки «Реестр»: чем глубже, тем конкретнее. */
+private sealed interface Layer {
+    data object Folders : Layer
+    data class Items(val section: Section, val group: String) : Layer
+    data class Record(val section: Section, val id: String) : Layer
 }
 
 @Composable
 private fun AppRoot() {
     val db by Store.db.collectAsState()
-    val scope = rememberCoroutineScope()
-    val stack = remember { mutableStateListOf<Screen>(Screen.Home) }
+    var tab by remember { mutableStateOf(Tab.SUMMARY) }
+    val layers = remember { mutableStateListOf<Layer>(Layer.Folders) }
+    var forward by remember { mutableStateOf(true) }
 
-    // Выбор — слой поверх экрана, а не отдельный экран в стеке. Иначе форма
-    // уходит из композиции и теряет всё набранное.
-    var pick by remember { mutableStateOf<PickRequest?>(null) }
+    fun dive(l: Layer) { forward = true; layers.add(l) }
+    fun surface() { if (layers.size > 1) { forward = false; layers.removeAt(layers.size - 1) } }
 
-    fun push(s: Screen) = stack.add(s)
-    fun pop() { if (stack.size > 1) stack.removeAt(stack.size - 1) }
-
-    fun afterSave() {
-        if (Store.autoSync && Store.syncConfigured) {
-            scope.launch { withContext(Dispatchers.IO) { Sync.run() } }
-        }
-        pop()
+    fun openRecord(section: Section, id: String) {
+        tab = Tab.REGISTRY
+        if (layers.size == 1) layers.add(Layer.Items(section, ""))
+        dive(Layer.Record(section, id))
     }
 
-    BackHandler(enabled = pick != null || stack.size > 1) {
-        if (pick != null) pick = null else pop()
+    BackHandler(enabled = layers.size > 1 || tab != Tab.SUMMARY) {
+        Feel.tick()
+        if (tab == Tab.REGISTRY && layers.size > 1) surface() else tab = Tab.SUMMARY
     }
 
     Box(Modifier.fillMaxSize().background(T.bg)) {
-        Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars)) {
-            when (val s = stack.last()) {
-                Screen.Home -> HomeScreen(db) { push(it) }
+        // Единственная графика на фоне: мягкое пятно акцента сверху.
+        AccentWash(Modifier.fillMaxWidth().height(320.dp))
 
-                Screen.Settings -> SettingsScreen(db) { pop() }
-
-                is Screen.SectionList -> SectionScreen(
-                    section = s.section,
-                    db = db,
-                    onBack = { pop() },
-                    onOpen = { push(it) },
-                    onCreate = { push(Screen.Form(s.section, null)) }
-                )
-
-                is Screen.Card -> CardScreen(
-                    section = s.section,
-                    id = s.id,
-                    db = db,
-                    onBack = { pop() },
-                    onOpen = { push(it) }
-                )
-
-                is Screen.Form -> FormScreen(
-                    section = s.section,
-                    id = s.id,
-                    db = db,
-                    onPick = { pick = it },
-                    onSaved = { afterSave() },
-                    onCancel = { pop() },
-                    onDeleted = {
-                        while (stack.size > 1 && stack.last() !is Screen.SectionList) {
-                            stack.removeAt(stack.size - 1)
-                        }
-                        if (Store.autoSync && Store.syncConfigured) {
-                            scope.launch { withContext(Dispatchers.IO) { Sync.run() } }
-                        }
+        Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars)) {
+            TopBar(
+                back = tab == Tab.REGISTRY && layers.size > 1,
+                onBack = { surface() },
+                title = when (tab) {
+                    Tab.REGISTRY -> when (layers.last()) {
+                        is Layer.Folders -> "Реестр"
+                        is Layer.Items -> "Объекты"
+                        is Layer.Record -> "Запись"
                     }
-                )
+                    else -> tab.title
+                }
+            )
+
+            Box(Modifier.weight(1f)) {
+                AnimatedContent(
+                    targetState = tab to layers.last(),
+                    transitionSpec = {
+                        val dir = if (forward) 1 else -1
+                        (slideInHorizontally(tween(T.MS_SCREEN, easing = T.curve)) { it / 6 * dir } +
+                            fadeIn(tween(T.MS_STATE))) togetherWith
+                            (slideOutHorizontally(tween(T.MS_EXIT, easing = T.curve)) { -it / 6 * dir } +
+                                fadeOut(tween(T.MS_EXIT)))
+                    },
+                    label = "screen"
+                ) { state ->
+                    val current = state.first
+                    val layer = state.second
+                    Column(
+                        Modifier
+                            .fillMaxSize()
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = T.screenPad)
+                    ) {
+                        when (current) {
+                            Tab.SUMMARY -> SummaryScreen(db) { s, id -> openRecord(s, id) }
+                            Tab.TASKS -> TasksScreen(db) { id -> openRecord(Section.CONTRACTS, id) }
+                            Tab.MORE -> MoreScreen(db)
+                            Tab.REGISTRY -> when (layer) {
+                                is Layer.Folders -> FoldersScreen(db) { s, g ->
+                                    dive(Layer.Items(s, g))
+                                }
+                                is Layer.Items -> ItemsScreen(db, layer.section, layer.group) { id ->
+                                    dive(Layer.Record(layer.section, id))
+                                }
+                                is Layer.Record -> RecordScreen(db, layer.section, layer.id) { s, id ->
+                                    dive(Layer.Record(s, id))
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(T.xxl))
+                    }
+                }
+            }
+
+            TabBar(tab) { next ->
+                Feel.tick()
+                if (next == Tab.REGISTRY && tab == Tab.REGISTRY) {
+                    while (layers.size > 1) layers.removeAt(layers.size - 1)
+                }
+                tab = next
             }
         }
-
-        pick?.let { request -> PickLayer(request, db) { pick = null } }
     }
 }
 
-// --- выбор поверх экрана -------------------------------------------------
+// ── шапка и вкладки ───────────────────────────────────────────────────────
 
 @Composable
-private fun BoxScope.PickLayer(request: PickRequest, db: Db, onClose: () -> Unit) {
-    val appear = remember { MutableTransitionState(false).apply { targetState = true } }
-    val maxH = (LocalConfiguration.current.screenHeightDp * 0.8f).dp
+private fun TopBar(back: Boolean, onBack: () -> Unit, title: String) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    Row(
+        Modifier.fillMaxWidth().padding(start = T.screenPad, end = 16.dp, top = 18.dp, bottom = T.sm),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (back) {
+            RoundBtn(Ic.back, "Назад", onClick = onBack)
+            Spacer(Modifier.width(T.md))
+        }
+        Q(title, Type.body, T.ink, 1, Modifier.weight(1f))
+        RoundBtn(Ic.search, "Поиск") { ctx.startActivity(SheetActivity.search(ctx)) }
+        Spacer(Modifier.width(T.sm))
+        RoundBtn(Ic.plus, "Добавить", accent = true) {
+            ctx.startActivity(SheetActivity.form(ctx, Section.SITES, null))
+        }
+    }
+}
 
+@Composable
+private fun RoundBtn(icon: String, label: String, accent: Boolean = false, onClick: () -> Unit) {
     Box(
         Modifier
-            .matchParentSize()
-            .background(T.scrim)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = onClose
-            )
-    )
+            .size(40.dp)
+            .tap(onClick = onClick)
+            .shadowSoft(T.rIcon)
+            .clip(RoundedCornerShape(T.rIcon))
+            .background(if (accent) T.accent else T.card),
+        contentAlignment = Alignment.Center
+    ) {
+        QIcon(icon, size = 20.dp, tint = if (accent) Color.White else T.mut)
+    }
+}
 
-    Box(Modifier.matchParentSize(), contentAlignment = Alignment.BottomCenter) {
-        AnimatedVisibility(
-            visibleState = appear,
-            enter = slideInVertically(tween(T.MS_SCREEN, easing = T.curve)) { it } +
-                fadeIn(tween(T.MS_STATE, easing = T.curve)),
-            exit = slideOutVertically(tween(T.MS_EXIT, easing = T.curve)) { it } +
-                fadeOut(tween(T.MS_EXIT, easing = T.curve))
-        ) {
+/**
+ * Нижние вкладки — там, где их ищут все.
+ *
+ * Выбранная подсвечена заливкой акцента: цвет один на приложение, и здесь
+ * он говорит «ты тут», а не украшает.
+ */
+@Composable
+private fun TabBar(current: Tab, onPick: (Tab) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Tab.entries.forEach { t ->
+            val on = t == current
             Column(
                 Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = maxH)
-                    .clip(RoundedCornerShape(topStart = T.rSheet, topEnd = T.rSheet))
-                    .background(T.bg)
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null
-                    ) { }
-                    .windowInsetsPadding(WindowInsets.navigationBars)
-                    .imePadding()
+                    .weight(1f)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(if (on) T.accent.copy(alpha = 0.10f) else Color.Transparent)
+                    .tap(haptic = false) { onPick(t) }
+                    .padding(vertical = 11.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Row(
-                    Modifier.fillMaxWidth().padding(start = T.lg, end = T.sm, top = T.lg),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Q(request.title, Type.title, T.text, 1, Modifier.weight(1f))
-                    Pressable(onClose) {
-                        Box(Modifier.size(T.touchMin), contentAlignment = Alignment.Center) {
-                            QIcon(Ic.close, size = 20.dp, tint = T.text2)
-                        }
-                    }
-                }
-                Spacer(Modifier.height(T.sm))
-                PickBody(request, db, onClose)
+                QIcon(t.icon, size = 20.dp, tint = if (on) T.accent else T.faint)
+                Spacer(Modifier.height(5.dp))
+                Q(t.title, Type.tab, if (on) T.accent else T.faint, 1)
             }
         }
     }
 }
 
-@Composable
-private fun ColumnScope.PickBody(request: PickRequest, db: Db, onClose: () -> Unit) {
-    when (request) {
-        is PickRequest.Values -> LazyColumn(
-            Modifier.weight(1f, fill = false),
-            contentPadding = PaddingValues(start = T.lg, end = T.lg, bottom = T.lg),
-            verticalArrangement = Arrangement.spacedBy(T.xs)
-        ) {
-            items(request.options) { option ->
-                val on = option.equals(request.current, true)
-                Pressable({ request.onPick(option); onClose() }, Modifier.fillMaxWidth()) {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = T.touchMin)
-                            .clip(RoundedCornerShape(T.rControl))
-                            .background(if (on) T.accent.chip else T.surface)
-                            .padding(horizontal = T.md, vertical = T.sm),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Q(option, Type.body, if (on) T.accent.ink else T.text, 2, Modifier.weight(1f))
-                        if (on) QIcon(Ic.check, size = 18.dp, tint = T.accent.ink, stroke = 2f)
-                    }
-                }
-            }
-        }
-
-        is PickRequest.CustomerPick -> QuickList(
-            rows = { onDone ->
-                db.liveCustomers.forEach { p ->
-                    PartyRow(p, p.inn.takeIf { it.isNotBlank() }?.let { "ИНН $it" }, Ic.customers) {
-                        request.onPick(p); onDone()
-                    }
-                    Spacer(Modifier.height(T.sm))
-                }
-            },
-            label = "Новый заказчик",
-            onCreate = { name ->
-                val made = Party(name = name)
-                Store.upsertCustomer(made)
-                request.onPick(made)
-            },
-            onClose = onClose
-        )
-
-        is PickRequest.EmployeePick -> QuickList(
-            rows = { onDone ->
-                db.liveEmployees.forEach { e ->
-                    EmployeeRow(e) { request.onPick(e); onDone() }
-                    Spacer(Modifier.height(T.sm))
-                }
-            },
-            label = "Новый сотрудник",
-            onCreate = { name ->
-                val made = Employee(name = name)
-                Store.upsertEmployee(made)
-                request.onPick(made)
-            },
-            onClose = onClose
-        )
-
-        is PickRequest.SitePick -> QuickList(
-            rows = { onDone ->
-                db.liveSites.forEach { s ->
-                    SiteRow(s, db) { request.onPick(s); onDone() }
-                    Spacer(Modifier.height(T.sm))
-                }
-            },
-            label = "Новый объект",
-            onCreate = { name ->
-                val made = Site(name = name)
-                Store.upsertSite(made)
-                request.onPick(made)
-            },
-            onClose = onClose
-        )
-    }
-}
+// ── сводка ────────────────────────────────────────────────────────────────
 
 /**
- * Список с возможностью завести запись прямо здесь, одним названием.
- * Уход на вторую форму выгрузил бы первую вместе со всем набранным.
- */
-@Composable
-private fun ColumnScope.QuickList(
-    rows: @Composable ColumnScope.(onDone: () -> Unit) -> Unit,
-    label: String,
-    onCreate: (String) -> Unit,
-    onClose: () -> Unit
-) {
-    var fresh by remember { mutableStateOf("") }
-
-    Column(
-        Modifier
-            .weight(1f, fill = false)
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = T.lg)
-    ) {
-        rows(onClose)
-    }
-
-    Column(Modifier.padding(T.lg)) {
-        Field(label, fresh, { fresh = it }, placeholder = "Название")
-        Spacer(Modifier.height(T.sm))
-        PrimaryButton("Создать и выбрать", {
-            onCreate(fresh.trim())
-            onClose()
-        }, enabled = fresh.isNotBlank())
-    }
-}
-
-// --- главный экран -------------------------------------------------------
-
-/**
- * Домашний экран — то, ради чего приложение открывают без пузыря: посмотреть
- * положение дел и дойти до нужной записи.
+ * Первый экран: один очаг, одна тревога, один график. Всё.
  *
- * Настройки отсюда убраны в отдельный экран. Раньше они лежали одной лентой
- * под разделами: четыре панели подряд, и чтобы добраться до объектов, надо
- * было пролистать резервное копирование. Настройку трогают раз в месяц,
- * реестр — каждый день, и порядок должен это отражать.
+ * Плитки «в работе / просрочено / ждёт оплаты / потенциально» отсюда убраны:
+ * четыре равновеликих числа спорили друг с другом, и человек не понимал,
+ * на что смотреть первым. Разбор по стадиям живёт в реестре.
  */
 @Composable
-private fun HomeScreen(db: Db, onOpen: (Screen) -> Unit) {
-    Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = T.lg)
-    ) {
-        Spacer(Modifier.height(T.lg))
-        Q("Подряд", Type.title, T.text)
-        Q("Объекты, договоры и люди под большой палец", Type.small, T.text2)
+private fun SummaryScreen(db: Db, onOpen: (Section, String) -> Unit) {
+    val s = remember(db) { db.summary() }
 
-        Spacer(Modifier.height(T.lg))
-        HomeSummary(db)
+    Hero(
+        label = "По договорам",
+        value = money(s.contracted).removeSuffix(" ₽"),
+        unit = "₽",
+        sub = if (s.rest > 0) "Не получено ${money(s.rest)}" else "Всё получено"
+    )
 
-        Spacer(Modifier.height(T.lg))
-        GroupTitle("Реестр")
-        Section.entries.forEach { s ->
-            NavRow(
-                icon = sectionIcon(s),
-                title = s.title,
-                subtitle = "",
-                trailing = db.count(s).toString()
-            ) { onOpen(Screen.SectionList(s)) }
-            Spacer(Modifier.height(T.sm))
-        }
+    val overdue = remember(db) {
+        db.liveContracts.filterNot { it.archived }
+            .filter { shownStatusOf(it) == Status.OVERDUE }
+    }
+    if (overdue.isNotEmpty()) {
+        val first = overdue.first()
+        StatCard(
+            label = "Просрочено",
+            value = overdue.size.toString(),
+            note = db.site(first.siteId)?.name ?: first.workKind,
+            alarm = true,
+            onClick = { onOpen(Section.CONTRACTS, first.id) }
+        )
+    } else if (s.awaitingPay > 0) {
+        StatCard("Ждёт оплаты", s.awaitingPay.toString(), money(s.rest))
+    } else {
+        StatCard("В работе", s.inWork.toString(), "Сроки не горят")
+    }
 
-        Spacer(Modifier.height(T.lg))
-        GroupTitle("Приложение")
-        NavRow(
-            icon = Ic.settings,
-            title = "Настройки",
-            subtitle = "Пузырь, шаблоны сообщений, таблица, резервная копия"
-        ) { onOpen(Screen.Settings) }
+    val points = remember(db) { incomeByMonth(db) }
+    if (points.size > 1) {
+        SparkCard("Поступления", trendOf(points), points)
+    }
 
-        Spacer(Modifier.height(T.xxl))
+    if (s.soon.isNotEmpty()) {
+        GroupLabel("Ближайший срок")
+        val (what, whenText) = s.soon.first()
+        ItemRow(what, whenText) { }
     }
 }
+
+/** Поступления по месяцам — из оплаченных долей договоров. */
+private fun incomeByMonth(db: Db): List<Float> {
+    val now = java.time.LocalDate.now()
+    val buckets = FloatArray(8)
+    db.liveContracts.forEach { c ->
+        val paid = c.paidAmount
+        if (paid <= 0) return@forEach
+        val end = parseDate(c.end) ?: return@forEach
+        val diff = (now.year - end.year) * 12 + (now.monthValue - end.monthValue)
+        if (diff in 0..7) buckets[7 - diff] += paid.toFloat()
+    }
+    return buckets.toList()
+}
+
+private fun trendOf(points: List<Float>): String {
+    val half = points.size / 2
+    val a = points.take(half).sum()
+    val b = points.drop(half).sum()
+    if (a <= 0f) return if (b > 0f) "рост" else "—"
+    val pct = ((b - a) / a * 100).toInt()
+    return if (pct >= 0) "+$pct%" else "$pct%"
+}
+
+// ── реестр: папки ─────────────────────────────────────────────────────────
 
 /**
- * Сводка на домашнем экране — те же числа, что и в панели, и считаются они
- * одним и тем же кодом. Две разные правды об одном договоре — худшее, что
- * может случиться с учётом.
+ * Верхний слой реестра — папки, а не список всего подряд.
+ *
+ * Смысл слоёв в том, чтобы не вникать в лишнее: сначала «что за пачка»,
+ * потом «что внутри». Плоский список это и убивал.
  */
 @Composable
-private fun HomeSummary(db: Db) {
-    val s = remember(db) { db.summary() }
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(T.rCard))
-            .background(T.surface)
-            .padding(T.lg)
-    ) {
-        Row(Modifier.fillMaxWidth()) {
-            HomeTally("В работе", s.inWork, T.success, Modifier.weight(1f))
-            HomeTally("Просрочено", s.overdue, T.danger, Modifier.weight(1f))
-            HomeTally("Ждёт оплаты", s.awaitingPay, T.warning, Modifier.weight(1f))
-            HomeTally("Потенциально", s.potential, T.info, Modifier.weight(1f))
+private fun FoldersScreen(db: Db, onOpen: (Section, String) -> Unit) {
+    Hero("Объекты", db.liveSites.size.toString(), sub = "по заказчикам")
+
+    val byCustomer = remember(db) {
+        db.liveSites.groupBy { db.customer(it.customerId)?.name ?: "Без заказчика" }
+            .toList().sortedByDescending { it.second.size }
+    }
+    byCustomer.forEach { (name, sites) ->
+        val hot = sites.any { site ->
+            db.activeContractsOfSite(site.id).any { shownStatusOf(it) == Status.OVERDUE }
         }
-        Spacer(Modifier.height(T.md))
-        Hairline()
-        Spacer(Modifier.height(T.md))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Q("По заключённым договорам", Type.small, T.text2, 1, Modifier.weight(1f))
-            Q(money(s.contracted), Type.amount, T.text, 1)
-        }
-        if (s.rest > 0) {
-            Spacer(Modifier.height(T.xs))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Q("Не получено", Type.small, T.text2, 1, Modifier.weight(1f))
-                Q(money(s.rest), Type.smallNum, T.warning.ink, 1)
+        FolderRow(name, sites.size, hot) { onOpen(Section.SITES, name) }
+    }
+
+    GroupLabel("Остальное")
+    FolderRow("Договоры", db.liveContracts.size) { onOpen(Section.CONTRACTS, "") }
+    FolderRow("Сотрудники", db.liveEmployees.size) { onOpen(Section.STAFF, "") }
+    FolderRow("Заказчики", db.liveCustomers.size) { onOpen(Section.CUSTOMERS, "") }
+}
+
+// ── реестр: записи ────────────────────────────────────────────────────────
+
+@Composable
+private fun ItemsScreen(db: Db, section: Section, group: String, onOpen: (String) -> Unit) {
+    when (section) {
+        Section.SITES -> {
+            val sites = remember(db, group) {
+                db.liveSites.filter { (db.customer(it.customerId)?.name ?: "Без заказчика") == group }
             }
-        }
-        if (s.potentialAmount > 0) {
-            Spacer(Modifier.height(T.xs))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Q("Потенциально, по КП", Type.small, T.text2, 1, Modifier.weight(1f))
-                Q(money(s.potentialAmount), Type.smallNum, T.text3, 1)
+            Hero(group.ifBlank { "Объекты" }, sites.size.toString(), sub = "объекта")
+            sites.forEach { site ->
+                val active = db.activeContractsOfSite(site.id)
+                val sum = active.sumOf { it.amount }
+                val hot = active.any { shownStatusOf(it) == Status.OVERDUE }
+                ItemRow(site.name.ifBlank { "Без названия" }, money(sum), hot) { onOpen(site.id) }
             }
+            if (sites.isEmpty()) Empty("Пусто", "У этого заказчика пока нет объектов")
         }
-        if (s.soon.isNotEmpty()) {
-            Spacer(Modifier.height(T.md))
-            Hairline()
-            Spacer(Modifier.height(T.md))
-            Q("Ближайшие сроки", Type.caption, T.text3)
-            Spacer(Modifier.height(T.xs))
-            s.soon.forEach { (what, when1) ->
-                Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
-                    Q(what, Type.small, T.text, 1, Modifier.weight(1f))
-                    Q(when1, Type.smallNum, T.text2, 1)
+
+        Section.CONTRACTS -> {
+            val list = remember(db) { db.liveContracts.filterNot { it.archived } }
+            Hero("Договоры", list.size.toString(), sub = "не закрыто")
+            list.forEach { c ->
+                val st = shownStatusOf(c)
+                ItemRow(
+                    c.workKind.ifBlank { "Без вида работ" },
+                    money(c.amount),
+                    st == Status.OVERDUE,
+                    sub = db.site(c.siteId)?.name.orEmpty()
+                ) { onOpen(c.id) }
+            }
+            if (list.isEmpty()) Empty("Пусто", "Заведи первый договор — он появится тут")
+        }
+
+        Section.STAFF -> {
+            val list = remember(db) { db.liveEmployees }
+            Hero("Сотрудники", list.size.toString(), sub = "в реестре")
+            list.groupBy { it.department.ifBlank { "Без отдела" } }
+                .toList().sortedBy { it.first }
+                .forEach { (dept, people) ->
+                    GroupLabel(dept)
+                    people.forEach { e ->
+                        ItemRow(e.name, "", sub = e.position) { onOpen(e.id) }
+                    }
                 }
+            if (list.isEmpty()) Empty("Пусто", "Список тянется с листа «Сотрудники»")
+        }
+
+        Section.CUSTOMERS -> {
+            val list = remember(db) { db.liveCustomers }
+            Hero("Заказчики", list.size.toString(), sub = "в реестре")
+            list.forEach { p ->
+                ItemRow(p.name, db.sitesOfCustomer(p.id).size.toString()) { onOpen(p.id) }
+            }
+            if (list.isEmpty()) Empty("Пусто", "Список тянется с листа «Заказчики»")
+        }
+    }
+}
+
+// ── реестр: запись ────────────────────────────────────────────────────────
+
+/**
+ * Запись целиком. Здесь подробности уместны — сюда за ними и пришли.
+ *
+ * Но и тут порядок один: сперва имя, потом факты, потом задачи, и только
+ * в самом низу — необратимое действие.
+ */
+@Composable
+private fun RecordScreen(db: Db, section: Section, id: String, onOpen: (Section, String) -> Unit) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    when (section) {
+        Section.SITES -> {
+            val site = db.site(id) ?: return Empty("Запись не найдена", "Возможно, её удалили в таблице")
+            val contracts = db.contractsOfSite(site.id)
+            val sum = contracts.filterNot { it.archived }.sumOf { it.amount }
+            HeroTitle("Объект", site.name.ifBlank { "Без названия" }, site.fullName)
+            Facts(
+                listOfNotNull(
+                    db.customer(site.customerId)?.name?.let { Triple("Заказчик", it, T.ink) },
+                    site.address.takeIf { it.isNotBlank() }?.let { Triple("Адрес", it, T.ink) },
+                    Triple("Сумма", money(sum), T.ink),
+                    db.stageOfSite(site.id)?.let { Triple("Стадия", it.label, T.ink) }
+                )
+            )
+            if (contracts.isNotEmpty()) {
+                GroupLabel("Договоры")
+                contracts.forEach { c ->
+                    val st = shownStatusOf(c)
+                    ItemRow(
+                        c.workKind.ifBlank { "Без вида работ" },
+                        money(c.amount),
+                        st == Status.OVERDUE,
+                        sub = st.label
+                    ) { onOpen(Section.CONTRACTS, c.id) }
+                }
+            }
+            EditRow("Изменить объект") {
+                ctx.startActivity(SheetActivity.form(ctx, Section.SITES, site.id))
+            }
+        }
+
+        Section.CONTRACTS -> {
+            val c = db.contract(id) ?: return Empty("Запись не найдена", "Возможно, его удалили в таблице")
+            val st = shownStatusOf(c)
+            HeroTitle("Договор", c.workKind.ifBlank { "Без вида работ" }, db.site(c.siteId)?.name.orEmpty())
+            Facts(
+                listOf(
+                    Triple("Статус", st.label, if (st == Status.OVERDUE) T.danger else T.ink),
+                    Triple("Сумма", money(c.amount), T.ink),
+                    Triple("Не получено", money(c.restAmount), T.accent),
+                    Triple("Срок", c.end.takeIf { it.isNotBlank() }?.let { dateShort(it) } ?: "—",
+                        if (st == Status.OVERDUE) T.danger else T.ink)
+                )
+            )
+            GroupLabel("Задачи · ${c.tasks.size - c.openTasks} из ${c.tasks.size}")
+            c.tasks.forEach { t ->
+                TaskRow(t.text, t.done) { Store.setContractTaskDone(c.id, t.id, !t.done) }
+            }
+            AddRow("Задача") { ctx.startActivity(SheetActivity.tasks(ctx, c.id)) }
+            EditRow("Изменить договор") {
+                ctx.startActivity(SheetActivity.form(ctx, Section.CONTRACTS, c.id))
+            }
+        }
+
+        Section.STAFF -> {
+            val e = db.employee(id) ?: return Empty("Запись не найдена", "Возможно, его удалили в таблице")
+            HeroTitle("Сотрудник", e.name, e.position)
+            Facts(
+                listOfNotNull(
+                    e.department.takeIf { it.isNotBlank() }?.let { Triple("Отдел", it, T.ink) },
+                    e.phones.firstOrNull()?.let { Triple("Телефон", it, T.ink) },
+                    e.location.takeIf { it.isNotBlank() }?.let { Triple("Нахождение", it, T.ink) }
+                )
+            )
+            EditRow("Поставить задачу") { ctx.startActivity(SheetActivity.task(ctx, e.id)) }
+        }
+
+        Section.CUSTOMERS -> {
+            val p = db.customer(id) ?: return Empty("Запись не найдена", "Возможно, его удалили в таблице")
+            HeroTitle("Заказчик", p.name, p.fullName)
+            Facts(
+                listOfNotNull(
+                    p.inn.takeIf { it.isNotBlank() }?.let { Triple("ИНН", it, T.ink) },
+                    p.director.takeIf { it.isNotBlank() }?.let { Triple("Руководитель", it, T.ink) },
+                    p.phone.takeIf { it.isNotBlank() }?.let { Triple("Телефон", it, T.ink) },
+                    p.bank.takeIf { it.isNotBlank() }?.let { Triple("Банк", it, T.ink) }
+                )
+            )
+            val sites = db.sitesOfCustomer(p.id)
+            if (sites.isNotEmpty()) {
+                GroupLabel("Объекты")
+                sites.forEach { s -> ItemRow(s.name, "") { onOpen(Section.SITES, s.id) } }
             }
         }
     }
 }
 
+/** Изменение записи — ровно одна кнопка со словом, внизу экрана. */
 @Composable
-private fun HomeTally(label: String, value: Int, tone: T.Tone, modifier: Modifier = Modifier) {
-    Column(modifier) {
-        Q(value.toString(), Type.title, if (value > 0) tone.ink else T.text3, 1)
-        Q(label, Type.caption, T.text3, 1)
+private fun EditRow(text: String, onClick: () -> Unit) {
+    Spacer(Modifier.height(T.lg))
+    AddRow(text, onClick)
+}
+
+// ── задачи ────────────────────────────────────────────────────────────────
+
+/**
+ * Все открытые задачи, сгруппированные по договору.
+ *
+ * Задача заводится в договоре и живёт в нём — этот экран только собирает
+ * их вместе. Поэтому над каждой группой стоит имя договора: видно, откуда
+ * она взялась и к чему относится.
+ */
+@Composable
+private fun TasksScreen(db: Db, onOpen: (String) -> Unit) {
+    val withTasks = remember(db) { db.liveContracts.filter { it.tasks.isNotEmpty() } }
+    val open = withTasks.sumOf { it.openTasks }
+
+    Hero(
+        "Открыто", open.toString(),
+        sub = if (withTasks.isEmpty()) "Задачи заводятся в договоре"
+        else "по ${withTasks.count { it.openTasks > 0 }} договорам"
+    )
+
+    if (withTasks.isEmpty()) {
+        Empty("Задач пока нет", "Открой договор и нажми «Задача» — она появится здесь")
+        return
+    }
+
+    withTasks.filter { it.openTasks > 0 }.forEach { c ->
+        val title = listOfNotNull(
+            db.site(c.siteId)?.name?.takeIf { it.isNotBlank() },
+            c.workKind.takeIf { it.isNotBlank() }
+        ).joinToString(" · ").ifBlank { "Договор" }
+        GroupLabel(title)
+        c.tasks.filterNot { it.done }.forEach { t ->
+            TaskRow(t.text, false) { Store.setContractTaskDone(c.id, t.id, true) }
+        }
+    }
+
+    val done = withTasks.flatMap { c -> c.tasks.filter { it.done }.map { c to it } }
+    if (done.isNotEmpty()) {
+        GroupLabel("Сделано")
+        done.take(5).forEach { (c, t) ->
+            TaskRow(t.text, true) { Store.setContractTaskDone(c.id, t.id, false) }
+        }
     }
 }
+
+// ── ещё ───────────────────────────────────────────────────────────────────
 
 /**
  * Настройки.
  *
- * Разложены по тому, чем человек занят, а не по тому, как устроен код:
- * «Пузырь», «Сообщения», «Таблица», «Копия». У каждой группы одна строка
- * пояснения — зачем она вообще, — и дальше только органы управления.
+ * Ни одной поясняющей строки под кнопкой: назначение читается из названия,
+ * а подробность вылезает по долгому нажатию. Так устроены настройки везде,
+ * и человеку не надо заново учиться читать наш экран.
  */
 @Composable
-private fun SettingsScreen(db: Db, onBack: () -> Unit) {
-    val ctx = LocalContext.current
+private fun MoreScreen(db: Db) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
 
     var bubbleOn by remember { mutableStateOf(Store.bubbleEnabled) }
-    var url by remember { mutableStateOf(Store.sheetsUrl) }
     var auto by remember { mutableStateOf(Store.autoSync) }
-    var greeting by remember { mutableStateOf(Store.greeting) }
     var syncing by remember { mutableStateOf(false) }
     var lastSync by remember { mutableStateOf(Store.lastSync) }
     var lastBackup by remember { mutableStateOf(Store.lastBackup) }
@@ -443,39 +580,28 @@ private fun SettingsScreen(db: Db, onBack: () -> Unit) {
     val notifLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { }
-
     val overlayLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
         granted = BubbleService.canDraw(ctx)
         if (granted && bubbleOn) BubbleService.start(ctx)
     }
-
     val saveLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
-        val result = Backup.write(ctx, uri)
+        val r = Backup.write(ctx, uri)
         lastBackup = Store.lastBackup
         Feel.confirm()
-        Toast.makeText(
-            ctx,
-            result.fold({ "Копия сохранена" }, { "Не вышло: ${it.message}" }),
-            Toast.LENGTH_LONG
-        ).show()
+        Toast.makeText(ctx, r.fold({ "Копия сохранена" }, { "Не вышло: ${it.message}" }), Toast.LENGTH_LONG).show()
     }
-
     val openLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
-        val result = Backup.read(ctx, uri)
+        val r = Backup.read(ctx, uri)
         Feel.confirm()
-        Toast.makeText(
-            ctx,
-            result.fold({ "Восстановлено записей: $it" }, { "Не вышло: ${it.message}" }),
-            Toast.LENGTH_LONG
-        ).show()
+        Toast.makeText(ctx, r.fold({ "Восстановлено: $it" }, { "Не вышло: ${it.message}" }), Toast.LENGTH_LONG).show()
     }
 
     fun askOverlay() {
@@ -484,455 +610,138 @@ private fun SettingsScreen(db: Db, onBack: () -> Unit) {
         )
     }
 
-    Column(Modifier.fillMaxSize()) {
-        Row(
-            Modifier.fillMaxWidth().padding(start = T.sm, end = T.lg, top = T.sm),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            BackButton(onBack)
-            Q("Настройки", Type.title, T.text, 1, Modifier.weight(1f))
+    Hero(
+        "Обмен",
+        if (lastSync.isBlank()) "—" else lastSync,
+        sub = if (Store.syncConfigured) "последняя синхронизация" else "таблица не подключена"
+    )
+
+    SettingRow(
+        name = if (syncing) "Обмениваюсь…" else "Синхронизировать",
+        hint = "Правки уезжают в таблицу, правки из таблицы приезжают сюда. Побеждает тот, кто правил позже.",
+        onClick = {
+            if (!Store.syncConfigured) {
+                Toast.makeText(ctx, "Сначала вставь ссылку на таблицу", Toast.LENGTH_SHORT).show()
+                return@SettingRow
+            }
+            if (syncing) return@SettingRow
+            syncing = true
+            scope.launch {
+                val r = withContext(Dispatchers.IO) { Sync.run() }
+                syncing = false
+                lastSync = Store.lastSync
+                Feel.confirm()
+                Toast.makeText(ctx, r.fold({ it.text }, { "Не вышло: ${it.message}" }), Toast.LENGTH_LONG).show()
+            }
         }
+    )
+    SettingRow(
+        name = "Обмениваться самому",
+        hint = "После каждой правки и при открытии пузыря.",
+        toggle = auto
+    ) { auto = !auto; Store.autoSync = auto; Feel.tick() }
+    SettingRow(
+        name = "Таблица",
+        value = if (Store.syncConfigured) "подключена" else "не задана",
+        hint = "Адрес веб-приложения Apps Script. Меняется раз в жизни.",
+        onClick = { ctx.startActivity(SheetActivity.sheetUrl(ctx)) }
+    )
 
-        Column(
-            Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = T.lg)
-        ) {
-            // --- пузырь -----------------------------------------------------
-            Spacer(Modifier.height(T.lg))
-            GroupTitle("Пузырь поверх приложений")
-            Panel {
-                SwitchRow(
-                    title = "Держать пузырь на экране",
-                    hint = "Реестр открывается поверх любого приложения",
-                    value = bubbleOn
-                ) { value ->
-                    if (value && !BubbleService.canDraw(ctx)) { askOverlay(); return@SwitchRow }
-                    bubbleOn = value
-                    Store.bubbleEnabled = value
-                    Feel.tick()
-                    if (value) {
-                        if (Build.VERSION.SDK_INT >= 33) notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                        BubbleService.start(ctx)
-                    } else BubbleService.stop(ctx)
-                }
-
-                if (!granted) {
-                    Spacer(Modifier.height(T.md))
-                    Q("Нужно разрешение «Поверх других приложений».", Type.small, T.warning.ink)
-                    Spacer(Modifier.height(T.sm))
-                    GhostButton("Дать разрешение", { askOverlay() }, Modifier.fillMaxWidth())
-                }
-
-                Spacer(Modifier.height(T.md))
-                Hairline()
-                Spacer(Modifier.height(T.md))
-                Q("Что умеет пузырь", Type.caption, T.text3)
-                Spacer(Modifier.height(T.xs))
-                Gesture("Тап", "рабочий стол с реестром")
-                Gesture("Потянуть", "колесо разделов")
-                Gesture("Потянуть дальше", "сразу новая запись")
-                Gesture("Долгое нажатие", "пузырь отрывается и едет за пальцем")
-            }
-
-            // --- сообщения ---------------------------------------------------
-            Spacer(Modifier.height(T.xl))
-            GroupTitle("Сообщения сотрудникам")
-            Panel {
-                Field(
-                    "Обращение", greeting, { greeting = it; Store.greeting = it },
-                    placeholder = "{Имя}, — или оставь пустым",
-                    hint = "Подставляется в начало задачи. Пусто — без обращения."
-                )
-            }
-            Spacer(Modifier.height(T.sm))
-            NavRow(
-                icon = Ic.chat,
-                title = "Шаблоны сообщений",
-                subtitle = "Создать новый, изменить или удалить старый",
-                trailing = db.templates.size.toString()
-            ) { ctx.startActivity(SheetActivity.templates(ctx)) }
-
-            // --- таблица ------------------------------------------------------
-            Spacer(Modifier.height(T.xl))
-            GroupTitle(
-                "Google-таблица",
-                "Связь двусторонняя. Правило одно: побеждает тот, кто правил позже. Удаление — исключение: его отдаёт тот, кто удалил, и оно не отменяется обменом."
-            )
-            Panel {
-                Field(
-                    "Ссылка веб-приложения Apps Script", url,
-                    { url = it; Store.sheetsUrl = it.trim() },
-                    placeholder = "https://script.google.com/macros/s/.../exec"
-                )
-                Spacer(Modifier.height(T.md))
-                SwitchRow(
-                    title = "Обмениваться самому",
-                    hint = "После правки и при открытии пузыря",
-                    value = auto
-                ) { auto = it; Store.autoSync = it; Feel.tick() }
-                Spacer(Modifier.height(T.md))
-                PrimaryButton(
-                    if (syncing) "Обмениваюсь…" else "Синхронизировать сейчас",
-                    onClick = {
-                        if (url.isBlank()) {
-                            Toast.makeText(ctx, "Сначала вставь ссылку", Toast.LENGTH_SHORT).show()
-                            return@PrimaryButton
-                        }
-                        syncing = true
-                        scope.launch {
-                            val result = withContext(Dispatchers.IO) { Sync.run() }
-                            syncing = false
-                            lastSync = Store.lastSync
-                            Feel.confirm()
-                            Toast.makeText(
-                                ctx,
-                                result.fold({ it.text }, { "Не вышло: ${it.message}" }),
-                                Toast.LENGTH_LONG
-                            ).show()
-                        }
-                    },
-                    enabled = !syncing
-                )
-                if (lastSync.isNotBlank()) {
-                    Spacer(Modifier.height(T.sm))
-                    Q("Последний обмен: $lastSync", Type.caption, T.text3)
-                }
-                Spacer(Modifier.height(T.md))
-                Hairline()
-                Spacer(Modifier.height(T.md))
-                Q("Как это работает", Type.caption, T.text3)
-                Spacer(Modifier.height(T.xs))
-                Gesture("Запись", "узнаётся по своему номеру, а не по строке")
-                Gesture("Правка", "остаётся та, что сделана позже")
-                Gesture("Удалил здесь", "строка в таблице сереет и зачёркивается")
-                Gesture("Удалил строку", "запись исчезает и здесь")
-            }
-
-            // --- копия --------------------------------------------------------
-            Spacer(Modifier.height(T.xl))
-            GroupTitle(
-                "Резервная копия",
-                "Реестр хранится на телефоне. Копия — единственный способ не потерять его вместе с устройством."
-            )
-            Panel {
-                PrimaryButton("Создать копию", { saveLauncher.launch(Backup.suggestedName()) })
-                Spacer(Modifier.height(T.sm))
-                GhostButton(
-                    "Восстановить из копии",
-                    { openLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
-                    Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(T.sm))
-                GhostButton("Выгрузить CSV", { Export.share(ctx) }, Modifier.fillMaxWidth())
-                if (lastBackup.isNotBlank()) {
-                    Spacer(Modifier.height(T.sm))
-                    Q("Последняя копия: $lastBackup", Type.caption, T.text3)
-                }
-            }
-
-            Spacer(Modifier.height(T.xxl))
-        }
+    GroupLabel("Пузырь")
+    SettingRow(
+        name = "Поверх приложений",
+        hint = "Реестр открывается поверх любого приложения в один тап.",
+        toggle = bubbleOn
+    ) {
+        if (!bubbleOn && !BubbleService.canDraw(ctx)) { askOverlay(); return@SettingRow }
+        bubbleOn = !bubbleOn
+        Store.bubbleEnabled = bubbleOn
+        Feel.tick()
+        if (bubbleOn) {
+            if (Build.VERSION.SDK_INT >= 33) notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            BubbleService.start(ctx)
+        } else BubbleService.stop(ctx)
     }
-}
-
-/** Заголовок группы. Одна причина существования группы — одна строка под ним. */
-@Composable
-private fun GroupTitle(title: String, hint: String = "") {
-    Q(title, Type.caption, T.text3)
-    if (hint.isNotBlank()) {
-        Spacer(Modifier.height(T.xs))
-        Q(hint, Type.small, T.text2)
+    if (!granted) {
+        SettingRow(
+            name = "Дать разрешение",
+            value = "нужно",
+            hint = "Android требует разрешение «Поверх других приложений».",
+            onClick = { askOverlay() }
+        )
     }
-    Spacer(Modifier.height(T.sm))
-}
 
-/**
- * Строка, которая куда-то ведёт. Знак слева, стрелка справа — по ней видно,
- * что это переход, а не подпись, ещё до того, как прочитан текст.
- */
-@Composable
-private fun NavRow(
-    icon: String,
-    title: String,
-    subtitle: String,
-    trailing: String = "",
-    onClick: () -> Unit
-) {
-    Pressable(onClick, Modifier.fillMaxWidth()) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .heightIn(min = 60.dp)
-                .clip(RoundedCornerShape(T.rCard))
-                .background(T.surface)
-                .padding(horizontal = T.md, vertical = T.sm),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            CardIcon(icon)
-            Spacer(Modifier.width(T.md))
-            Column(Modifier.weight(1f)) {
-                Q(title, Type.heading, T.text, 1)
-                if (subtitle.isNotBlank()) Q(subtitle, Type.caption, T.text3, 2)
-            }
-            if (trailing.isNotBlank()) {
-                Spacer(Modifier.width(T.sm))
-                Q(trailing, Type.smallNum, T.text2, 1)
-            }
-            Spacer(Modifier.width(T.sm))
-            QIcon(Ic.chevronRight, size = 20.dp, tint = T.text3)
-        }
-    }
-}
-
-/**
- * Переключатель с подписью. Подпись всегда описывает включённое состояние:
- * «Обмениваться самому» — понятно и что будет, если выключить, а
- * «Не обмениваться самому» в положении «выкл» читается двойным отрицанием.
- */
-@Composable
-private fun SwitchRow(title: String, hint: String, value: Boolean, onChange: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Q(title, Type.small, T.text)
-            if (hint.isNotBlank()) Q(hint, Type.caption, T.text3, 2)
-        }
-        Spacer(Modifier.width(T.md))
-        Toggle(value, onChange)
-    }
-}
-
-@Composable
-private fun Panel(content: @Composable ColumnScope.() -> Unit) {
-    Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(T.rCard)).background(T.surface).padding(T.lg),
-        content = content
+    GroupLabel("Данные")
+    SettingRow(
+        name = "Шаблоны сообщений",
+        value = db.templates.size.toString(),
+        hint = "Заготовки задач сотрудникам: создать, изменить, удалить.",
+        onClick = { ctx.startActivity(SheetActivity.templates(ctx)) }
+    )
+    SettingRow(
+        name = "Создать копию",
+        hint = "Реестр живёт на телефоне. Копия — единственный способ не потерять его вместе с трубкой.",
+        onClick = { saveLauncher.launch(Backup.suggestedName()) }
+    )
+    SettingRow(
+        name = "Восстановить из копии",
+        value = lastBackup.ifBlank { "" },
+        hint = "Заменит весь реестр содержимым файла.",
+        onClick = { openLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) }
+    )
+    SettingRow(
+        name = "Выгрузить CSV",
+        hint = "Отдаёт реестр таблицей — для почты или Excel.",
+        onClick = { Export.share(ctx) }
     )
 }
 
+/**
+ * Строка настройки: название, значение или переключатель.
+ *
+ * Подсказка живёт под долгим нажатием, а не под кнопкой: объяснение доступно
+ * тому, кому оно нужно, и не мешает тому, кто и так знает.
+ */
 @Composable
-private fun Gesture(name: String, what: String) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
-        Q(name, Type.small, T.text, 1, Modifier.width(132.dp))
-        Q(what, Type.small, T.text2, 2, Modifier.weight(1f))
-    }
-}
-
-@Composable
-private fun Toggle(value: Boolean, onChange: (Boolean) -> Unit) {
-    Pressable({ onChange(!value) }) {
-        Box(
+private fun SettingRow(
+    name: String,
+    hint: String,
+    value: String = "",
+    toggle: Boolean? = null,
+    onClick: () -> Unit = {}
+) {
+    var tip by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth()) {
+        if (tip) {
+            Surface(
+                Modifier.padding(bottom = T.sm),
+                radius = 18.dp,
+                fill = T.ink
+            ) {
+                Q(hint, Type.small, Color(0xFFEDF1F2), 5, Modifier.padding(horizontal = 16.dp, vertical = 14.dp))
+            }
+        }
+        Surface(
             Modifier
-                .size(width = 52.dp, height = 32.dp)
-                .clip(RoundedCornerShape(percent = 50))
-                .background(if (value) T.accent.fill else T.muted.chip),
-            contentAlignment = if (value) Alignment.CenterEnd else Alignment.CenterStart
+                .padding(bottom = T.gap)
+                .longPressable(
+                    onClick = { if (toggle != null) { onClick(); tip = false } else onClick() },
+                    onLong = { tip = !tip; Feel.confirm() }
+                ),
+            radius = T.rRow
         ) {
-            Box(
-                Modifier
-                    .padding(horizontal = 3.dp)
-                    .size(26.dp)
-                    .clip(RoundedCornerShape(percent = 50))
-                    .background(Color.White)
-            )
-        }
-    }
-}
-
-// --- список раздела ------------------------------------------------------
-
-@Composable
-private fun SectionScreen(
-    section: Section,
-    db: Db,
-    onBack: () -> Unit,
-    onOpen: (Screen) -> Unit,
-    onCreate: () -> Unit
-) {
-    Column(Modifier.fillMaxSize()) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = T.sm, vertical = T.sm),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            BackButton(onBack)
-            Q(section.title, Type.title, T.text, 1, Modifier.weight(1f))
-            Pressable(onCreate) {
-                Box(
-                    Modifier.size(T.touchMin).clip(RoundedCornerShape(percent = 50)).background(T.accent.fill),
-                    contentAlignment = Alignment.Center
-                ) { QIcon(Ic.plus, size = 22.dp, tint = Color.White, stroke = 2f) }
-            }
-        }
-
-        if (db.count(section) == 0) {
-            EmptyState(
-                text = "${section.title} — пусто",
-                hint = "Здесь появятся записи, которые ты заведёшь.",
-                action = "Добавить ${section.one.lowercase()}",
-                onAction = onCreate
-            )
-            return@Column
-        }
-
-        LazyColumn(
-            Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = T.lg, end = T.lg, bottom = T.xxl),
-            verticalArrangement = Arrangement.spacedBy(T.md)
-        ) {
-            when (section) {
-                Section.SITES -> items(db.liveSites, key = { it.id }) { s ->
-                    SiteRow(s, db) { onOpen(Screen.Card(Section.SITES, s.id)) }
-                }
-
-                Section.CONTRACTS -> items(db.liveContracts, key = { it.id }) { c ->
-                    ContractRow(c, db) { onOpen(Screen.Card(Section.CONTRACTS, c.id)) }
-                }
-
-                Section.CUSTOMERS -> items(db.liveCustomers, key = { it.id }) { p ->
-                    PartyRow(p, p.inn.takeIf { it.isNotBlank() }?.let { "ИНН $it" }, Ic.customers) {
-                        onOpen(Screen.Card(Section.CUSTOMERS, p.id))
-                    }
-                }
-
-                Section.STAFF -> items(db.liveEmployees, key = { it.id }) { e ->
-                    EmployeeRow(e) { onOpen(Screen.Card(Section.STAFF, e.id)) }
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = T.cardPad, vertical = 20.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Q(name, Type.body, T.ink, 2, Modifier.weight(1f))
+                Spacer(Modifier.width(T.md))
+                when {
+                    toggle != null -> Switch(toggle)
+                    value.isNotBlank() -> Q(value, Type.small, T.faint, 1)
+                    else -> QIcon(Ic.chevronRight, size = 18.dp, tint = T.faint)
                 }
             }
         }
     }
-}
-
-// --- карточка ------------------------------------------------------------
-
-@Composable
-private fun CardScreen(
-    section: Section,
-    id: String,
-    db: Db,
-    onBack: () -> Unit,
-    onOpen: (Screen) -> Unit
-) {
-    val ctx = LocalContext.current
-    val title = when (section) {
-        Section.SITES -> db.site(id)?.name
-        Section.CONTRACTS -> db.contract(id)?.code
-        Section.CUSTOMERS -> db.customer(id)?.name
-        Section.STAFF -> db.employee(id)?.name
-    } ?: section.one
-
-    Column(Modifier.fillMaxSize()) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = T.sm, vertical = T.sm),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            BackButton(onBack)
-            Q(title, Type.heading, T.text, 1, Modifier.weight(1f))
-        }
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-            when (section) {
-                Section.SITES -> db.site(id)?.let { site ->
-                    SiteCard(
-                        site, db,
-                        onEdit = { onOpen(Screen.Form(Section.SITES, id)) },
-                        onAddContract = { onOpen(Screen.Form(Section.CONTRACTS, null)) },
-                        onOpenContract = { onOpen(Screen.Card(Section.CONTRACTS, it)) }
-                    )
-                }
-
-                Section.CONTRACTS -> db.contract(id)?.let {
-                    ContractCard(it, db, onEdit = { onOpen(Screen.Form(Section.CONTRACTS, id)) })
-                }
-
-                Section.CUSTOMERS -> db.customer(id)?.let {
-                    PartyCard(
-                        it, db,
-                        onEdit = { onOpen(Screen.Form(Section.CUSTOMERS, id)) },
-                        onOpenSite = { onOpen(Screen.Card(Section.SITES, it)) }
-                    )
-                }
-
-                Section.STAFF -> db.employee(id)?.let { e ->
-                    EmployeeCard(
-                        e, db,
-                        onEdit = { onOpen(Screen.Form(Section.STAFF, id)) },
-                        onTask = { ctx.startActivity(SheetActivity.task(ctx, e.id)) }
-                    )
-                }
-            }
-        }
-    }
-}
-
-// --- форма ---------------------------------------------------------------
-
-@Composable
-private fun FormScreen(
-    section: Section,
-    id: String?,
-    db: Db,
-    onPick: (PickRequest) -> Unit,
-    onSaved: () -> Unit,
-    onCancel: () -> Unit,
-    onDeleted: () -> Unit
-) {
-    // Заготовка создаётся один раз: Site() и Party() выдают новый
-    // идентификатор при каждом вызове, и ключ состояния менялся бы
-    // на каждой перерисовке, стирая всё набранное.
-    val key = section to id
-    when (section) {
-        Section.SITES -> {
-            val initial = remember(key) { db.site(id) ?: Site() }
-            SiteForm(
-                initial = initial, db = db, onPick = onPick,
-                onDone = { Store.upsertSite(it); onSaved() },
-                onCancel = onCancel,
-                onDelete = if (id != null) ({ Store.deleteSite(id); onDeleted() }) else null
-            )
-        }
-
-        Section.CONTRACTS -> {
-            val initial = remember(key) { db.contract(id) ?: Contract() }
-            ContractForm(
-                initial = initial, db = db, onPick = onPick,
-                onDone = { Store.upsertContract(it); onSaved() },
-                onCancel = onCancel,
-                onDelete = if (id != null) ({ Store.deleteContract(id); onDeleted() }) else null
-            )
-        }
-
-        Section.CUSTOMERS -> {
-            val initial = remember(key) { db.customer(id) ?: Party() }
-            PartyForm(
-                initial = initial,
-                title = if (id == null) "Новый заказчик" else "Заказчик",
-                onDone = { Store.upsertCustomer(it); onSaved() },
-                onCancel = onCancel,
-                onDelete = if (id != null) ({ Store.deleteCustomer(id); onDeleted() }) else null
-            )
-        }
-
-        Section.STAFF -> {
-            val initial = remember(key) { db.employee(id) ?: Employee() }
-            EmployeeForm(
-                initial = initial, db = db, onPick = onPick,
-                onDone = { Store.upsertEmployee(it); onSaved() },
-                onCancel = onCancel,
-                onDelete = if (id != null) ({ Store.deleteEmployee(id); onDeleted() }) else null
-            )
-        }
-    }
-}
-
-@Composable
-private fun BackButton(onBack: () -> Unit) {
-    Pressable(onBack) {
-        Box(Modifier.size(T.touchMin), contentAlignment = Alignment.Center) {
-            QIcon(Ic.chevronLeft, size = 24.dp, tint = T.text)
-        }
-    }
-}
-
-private fun sectionIcon(s: Section): String = when (s) {
-    Section.SITES -> Ic.sites
-    Section.CONTRACTS -> Ic.contracts
-    Section.CUSTOMERS -> Ic.customers
-    Section.STAFF -> Ic.staff
 }

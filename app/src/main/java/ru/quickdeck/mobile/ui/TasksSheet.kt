@@ -201,8 +201,47 @@ private fun TaskRow(task: ContractTask, contractId: String, onEdit: () -> Unit) 
             Store.deleteContractTask(contractId, task.id)
         }) {
             Box(Modifier.size(T.touchMin), contentAlignment = Alignment.Center) {
-                QIcon(Ic.trash, size = 18.dp, tint = T.danger.ink)
+                QIcon(Ic.trash, size = 18.dp, tint = T.dangerTone.ink)
             }
         }
+    }
+}
+
+/**
+ * Адрес таблицы.
+ *
+ * Одно поле — и потому отдельного экрана настроек у него нет: строка в
+ * «Ещё» открывает этот лист, человек вставляет ссылку и закрывает.
+ */
+@Composable
+fun ColumnScope.SheetUrlStep(onClose: () -> Unit) {
+    var url by remember { mutableStateOf(Store.sheetsUrl) }
+
+    Row(
+        Modifier.fillMaxWidth().padding(start = T.lg, end = T.sm, top = T.md),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Q("Google-таблица", Type.title, T.text, 1)
+            Q("Двусторонний обмен", Type.small, T.text2, 1)
+        }
+        Pressable(onClose) {
+            Box(Modifier.size(T.touchMin), contentAlignment = Alignment.Center) {
+                QIcon(Ic.close, size = 20.dp, tint = T.text2)
+            }
+        }
+    }
+
+    Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(T.lg)) {
+        Field(
+            "Ссылка веб-приложения", url,
+            { url = it; Store.sheetsUrl = it.trim() },
+            placeholder = "https://script.google.com/macros/s/.../exec",
+            singleLine = false,
+            hint = "Развернуть → Веб-приложение → доступ «у всех» → ссылка /exec"
+        )
+        Spacer(Modifier.height(T.lg))
+        PrimaryButton("Готово", { Feel.confirm(); onClose() }, enabled = true)
+        Spacer(Modifier.height(T.xxl))
     }
 }

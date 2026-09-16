@@ -345,7 +345,7 @@ internal fun ColumnScope.ContractBody(c: Contract, db: Db, host: OverlayHost) {
         }
 
         overdueText(c.end)?.let {
-            Q(it, Type.small, T.danger.fill, 1)
+            Q(it, Type.small, T.dangerTone.fill, 1)
             Spacer(Modifier.height(T.sm))
         }
 
@@ -485,7 +485,7 @@ internal fun ColumnScope.ContractBody(c: Contract, db: Db, host: OverlayHost) {
                 val late = h.fact.isBlank() && overdueText(h.plan) != null
                 val tone = when {
                     h.status == HandoverStatus.ACCEPTED -> T.success
-                    late -> T.danger
+                    late -> T.dangerTone
                     else -> T.muted
                 }
                 Row(
@@ -616,7 +616,7 @@ internal fun ColumnScope.StaffBody(e: Employee, db: Db, host: OverlayHost) {
                 "email" -> "Почта"
                 else -> chat.kind
             }
-            DarkPill(if (chat.kind == "email") Ic.mail else Ic.chat, label, T.accent) {
+            DarkPill(if (chat.kind == "email") Ic.mail else Ic.chat, label, T.action) {
                 Actions.chat(ctx, chat)
             }
             Spacer(Modifier.height(T.sm))
@@ -721,12 +721,12 @@ private fun FactLink(key: String, value: String, onClick: (() -> Unit)?) {
             Q(
                 value,
                 Type.small,
-                if (onClick != null) T.accent.fill else T.textOnDark,
+                if (onClick != null) T.action.fill else T.textOnDark,
                 2,
                 Modifier.weight(1f)
             )
             if (onClick != null) {
-                QIcon(Ic.chevronRight, size = 16.dp, tint = T.accent.fill, stroke = 2f)
+                QIcon(Ic.chevronRight, size = 16.dp, tint = T.action.fill, stroke = 2f)
             }
         }
     }
@@ -822,7 +822,7 @@ private fun ProgressStepper(percent: Int, onChange: (Int) -> Unit) {
                 .fillMaxWidth(percent.coerceIn(0, 100) / 100f)
                 .height(4.dp)
                 .clip(RoundedCornerShape(2.dp))
-                .background(T.accent.fill)
+                .background(T.action.fill)
         )
     }
 }
@@ -852,7 +852,7 @@ private fun ColumnScope.BottomActions(
                     .fillMaxWidth()
                     .heightIn(min = T.touchMin)
                     .clip(RoundedCornerShape(T.rControl))
-                    .background(T.accent.fill),
+                    .background(T.action.fill),
                 contentAlignment = Alignment.Center
             ) { Q(primary.first, Type.heading, Color.White) }
         }
@@ -879,7 +879,7 @@ internal fun RoundAction(icon: String, label: String, accent: Boolean = false, o
             Modifier
                 .size(T.touchMin)
                 .clip(RoundedCornerShape(percent = 50))
-                .background(if (accent) T.accent.fill else Color.White.copy(alpha = 0.08f)),
+                .background(if (accent) T.action.fill else Color.White.copy(alpha = 0.08f)),
             contentAlignment = Alignment.Center
         ) {
             QIcon(

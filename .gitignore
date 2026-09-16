@@ -28,3 +28,4 @@ build.log
 # создаётся заново, в репозитории только мешает.
 *.apk
 Claude outputs/
+build.log 

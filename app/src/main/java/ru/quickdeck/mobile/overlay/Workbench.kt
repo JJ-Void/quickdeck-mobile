@@ -152,8 +152,8 @@ private fun SummaryStrip(db: Db) {
             .padding(horizontal = T.md, vertical = T.sm)
     ) {
         Row(Modifier.fillMaxWidth()) {
-            Tally("В работе", s.inWork, T.accent, Modifier.weight(1f))
-            Tally("Просрочено", s.overdue, T.danger, Modifier.weight(1f))
+            Tally("В работе", s.inWork, T.action, Modifier.weight(1f))
+            Tally("Просрочено", s.overdue, T.dangerTone, Modifier.weight(1f))
             Tally("Ждёт оплаты", s.awaitingPay, T.warning, Modifier.weight(1f))
             Tally("Потенциально", s.potential, T.info, Modifier.weight(1f))
         }
@@ -249,7 +249,7 @@ private fun Sections(db: Db, current: Section) {
                         Q(
                             s.title,
                             Type.caption,
-                            if (on) T.accent.fill else T.text2OnDark,
+                            if (on) T.action.fill else T.text2OnDark,
                             1
                         )
                     }
@@ -408,7 +408,7 @@ private fun EntryLine(e: Entry, onClick: () -> Unit) {
                         Q(
                             e.status,
                             Type.caption,
-                            if (e.warn) T.danger.fill else T.text2OnDark,
+                            if (e.warn) T.dangerTone.fill else T.text2OnDark,
                             1
                         )
                     }

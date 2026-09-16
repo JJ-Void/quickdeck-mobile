@@ -18,7 +18,7 @@ import ru.quickdeck.mobile.data.*
 
 /** Иконка в карточке: радиус 10 внутри радиуса 16 при отступе 6 — концентрично. */
 @Composable
-fun CardIcon(path: String, tone: T.Tone = T.accent, size: Dp = 44.dp) {
+fun CardIcon(path: String, tone: T.Tone = T.action, size: Dp = 44.dp) {
     Box(
         Modifier.size(size).clip(RoundedCornerShape(T.rIcon)).background(tone.chip),
         contentAlignment = Alignment.Center
@@ -44,7 +44,7 @@ fun Progress(percent: Int, modifier: Modifier = Modifier) {
                     .fillMaxWidth(percent.coerceIn(0, 100) / 100f)
                     .height(4.dp)
                     .clip(RoundedCornerShape(2.dp))
-                    .background(T.accent.fill)
+                    .background(T.action.fill)
             )
         }
         Spacer(Modifier.width(T.sm))
@@ -110,7 +110,7 @@ fun ContractRow(c: Contract, db: Db, onClick: () -> Unit) {
                     StatusChip(status)
                     Spacer(Modifier.width(T.sm))
                     val due = overdue ?: c.end.takeIf { it.isNotBlank() }?.let { "до ${dateShort(it)}" }
-                    if (due != null) Q(due, Type.caption, if (overdue != null) T.danger.ink else T.text3, 1)
+                    if (due != null) Q(due, Type.caption, if (overdue != null) T.dangerTone.ink else T.text3, 1)
                 }
                 if (c.amount != 0L) {
                     Spacer(Modifier.height(T.xs))
@@ -275,8 +275,8 @@ fun ContractCard(c: Contract, db: Db, onEdit: () -> Unit) {
         KeyValue("Отдел", db.refs.departmentOf(c.workKind))
         KeyValue("Ответственный", c.responsible)
         KeyValue("Начало", if (c.start.isBlank()) "" else dateLong(c.start))
-        KeyValue("Срок", if (c.end.isBlank()) "" else dateLong(c.end), if (overdue != null) T.danger.ink else T.text)
-        if (overdue != null) KeyValue("", overdue, T.danger.ink)
+        KeyValue("Срок", if (c.end.isBlank()) "" else dateLong(c.end), if (overdue != null) T.dangerTone.ink else T.text)
+        if (overdue != null) KeyValue("", overdue, T.dangerTone.ink)
         if (c.note.isNotBlank()) KeyValue("Комментарий", c.note)
 
         val pays = c.payments.filterNot { it.empty }
@@ -328,7 +328,7 @@ fun PartyCard(p: Party, db: Db, onEdit: () -> Unit, onOpenSite: (String) -> Unit
                     ActionPill(Ic.phone, "Позвонить", T.success) { Actions.dial(ctx, p.phone) }
                 }
                 if (p.email.isNotBlank()) {
-                    ActionPill(Ic.mail, "Написать", T.accent) { Actions.chat(ctx, Chat("email", p.email)) }
+                    ActionPill(Ic.mail, "Написать", T.action) { Actions.chat(ctx, Chat("email", p.email)) }
                 }
             }
         }
@@ -414,7 +414,7 @@ fun EmployeeCard(e: Employee, db: Db, onEdit: () -> Unit, onTask: () -> Unit) {
                         "email" -> "Почта"
                         else -> chat.kind
                     }
-                    ActionPill(if (chat.kind == "email") Ic.mail else Ic.chat, label, T.accent) {
+                    ActionPill(if (chat.kind == "email") Ic.mail else Ic.chat, label, T.action) {
                         Actions.chat(ctx, chat)
                     }
                 }

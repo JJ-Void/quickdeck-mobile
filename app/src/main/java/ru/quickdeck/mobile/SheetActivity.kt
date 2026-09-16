@@ -60,6 +60,7 @@ class SheetActivity : ComponentActivity() {
         private const val MODE_TASK = "task"
         private const val MODE_TEMPLATES = "templates"
         private const val MODE_TASKS = "tasks"
+        private const val MODE_URL = "url"
 
         fun form(ctx: Context, section: Section, id: String?): Intent =
             Intent(ctx, SheetActivity::class.java).apply {
@@ -98,6 +99,13 @@ class SheetActivity : ComponentActivity() {
             Intent(ctx, SheetActivity::class.java).apply {
                 putExtra(EXTRA_MODE, MODE_TASKS)
                 putExtra(EXTRA_ID, contractId)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+
+        /** Адрес таблицы: одно поле, поэтому отдельного экрана не заводим. */
+        fun sheetUrl(ctx: Context): Intent =
+            Intent(ctx, SheetActivity::class.java).apply {
+                putExtra(EXTRA_MODE, MODE_URL)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
 
@@ -183,6 +191,8 @@ private fun SheetRoot(
                 "search" -> SearchStep(db = db, onOpen = { target = it }, onClose = onDone)
 
                 "templates" -> TemplatesSheet(db = db, onClose = onDone)
+
+                "url" -> SheetUrlStep(onClose = onDone)
 
                 "tasks" -> {
                     val contract = db.contract(id)
@@ -403,12 +413,12 @@ private fun ColumnScope.ValueList(request: PickRequest.Values, onClose: () -> Un
                         .fillMaxWidth()
                         .heightIn(min = T.touchMin)
                         .clip(RoundedCornerShape(T.rControl))
-                        .background(if (selected) T.accent.chip else T.surface)
+                        .background(if (selected) T.action.chip else T.surface)
                         .padding(horizontal = T.md, vertical = T.sm),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Q(option, Type.body, if (selected) T.accent.ink else T.text, 2, Modifier.weight(1f))
-                    if (selected) QIcon(Ic.check, size = 18.dp, tint = T.accent.ink, stroke = 2f)
+                    Q(option, Type.body, if (selected) T.action.ink else T.text, 2, Modifier.weight(1f))
+                    if (selected) QIcon(Ic.check, size = 18.dp, tint = T.action.ink, stroke = 2f)
                 }
             }
         }

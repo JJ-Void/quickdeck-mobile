@@ -207,7 +207,7 @@ private fun Lens(
         animationSpec = tween(T.MS_PRESS, easing = T.curve),
         label = "lens"
     )
-    val tint = if (creating) T.accent.fill else Color.White
+    val tint = if (creating) T.action.fill else Color.White
 
     Box(
         Modifier
@@ -262,7 +262,7 @@ private fun WheelCard(
     )
 
     val fill = when {
-        creating -> T.accent.fill
+        creating -> T.action.fill
         selected -> T.panelRaised
         else -> T.panelCard
     }
@@ -280,7 +280,7 @@ private fun WheelCard(
                 width = if (selected) 1.5.dp else 1.dp,
                 color = when {
                     creating -> Color.White.copy(alpha = 0.34f)
-                    selected -> T.accent.fill.copy(alpha = 0.22f + 0.6f * lift)
+                    selected -> T.action.fill.copy(alpha = 0.22f + 0.6f * lift)
                     else -> T.hairlineDark
                 },
                 shape = RoundedCornerShape(T.rCard)
@@ -295,7 +295,7 @@ private fun WheelCard(
                 .background(
                     when {
                         creating -> Color.White.copy(alpha = 0.2f)
-                        selected -> T.accent.fill.copy(alpha = 0.18f)
+                        selected -> T.action.fill.copy(alpha = 0.18f)
                         else -> Color.White.copy(alpha = 0.06f)
                     }
                 ),
@@ -306,7 +306,7 @@ private fun WheelCard(
                 size = 20.dp,
                 tint = when {
                     creating -> Color.White
-                    selected -> T.accent.fill
+                    selected -> T.action.fill
                     else -> T.text2OnDark
                 },
                 stroke = if (selected || creating) 2f else 1.75f
