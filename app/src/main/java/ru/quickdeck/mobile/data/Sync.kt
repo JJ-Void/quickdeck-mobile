@@ -34,10 +34,27 @@ object Sync {
         encodeDefaults = true
     }
 
-    data class Report(val fromTable: Int, val at: String) {
+    /**
+     * Чем кончился обмен. Человеку важны две вещи: что приехало нового и
+     * что исчезло — потому что исчезновение записи пугает сильнее всего,
+     * если о нём не сказать.
+     */
+    data class Report(val fromTable: Int, val removed: Int, val at: String) {
         val text: String
-            get() = if (fromTable == 0) "Таблица уже совпадает"
-            else "Из таблицы пришло $fromTable ${plural(fromTable.toLong(), "изменение", "изменения", "изменений")}"
+            get() {
+                val parts = buildList {
+                    if (fromTable > 0) {
+                        add("пришло $fromTable " +
+                            plural(fromTable.toLong(), "изменение", "изменения", "изменений"))
+                    }
+                    if (removed > 0) {
+                        add("удалено $removed " +
+                            plural(removed.toLong(), "запись", "записи", "записей"))
+                    }
+                }
+                return if (parts.isEmpty()) "Таблица уже совпадает"
+                else "Из таблицы: " + parts.joinToString(", ")
+            }
     }
 
     fun run(): Result<Report> = runCatching {
@@ -70,7 +87,11 @@ object Sync {
 
         val at = LocalDateTime.now().format(DateTimeFormatter.ofPattern("dd.MM HH:mm"))
         Store.lastSync = at
-        Report(fromTable = incomingCount(local, remote), at = at)
+        Report(
+            fromTable = incomingCount(local, remote),
+            removed = removedCount(local, remote),
+            at = at
+        )
     }
 
     private fun incomingCount(local: Db, remote: Db): Int =
@@ -79,6 +100,26 @@ object Sync {
             newer(local.sites, remote.sites) +
             newer(local.contracts, remote.contracts) +
             newer(local.handovers, remote.handovers)
+
+    /**
+     * Сколько записей таблица объявила удалёнными из тех, что телефон ещё
+     * считал живыми. Это и есть надгробия: без них удалённое возвращалось
+     * бы при каждом обмене.
+     */
+    private fun removedCount(local: Db, remote: Db): Int =
+        buried(local.customers, remote.customers) +
+            buried(local.employees, remote.employees) +
+            buried(local.sites, remote.sites) +
+            buried(local.contracts, remote.contracts) +
+            buried(local.handovers, remote.handovers)
+
+    private fun <T : Row> buried(local: List<T>, remote: List<T>): Int {
+        val byId = local.associateBy { it.id }
+        return remote.count { r ->
+            val l = byId[r.id]
+            r.deleted && l != null && !l.deleted
+        }
+    }
 
     private fun <T : Row> newer(local: List<T>, remote: List<T>): Int {
         val byId = local.associateBy { it.id }

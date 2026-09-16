@@ -555,7 +555,7 @@ private fun SettingsScreen(db: Db, onBack: () -> Unit) {
             Spacer(Modifier.height(T.xl))
             GroupTitle(
                 "Google-таблица",
-                "Связь двусторонняя: правки из телефона уезжают в таблицу, правки в таблице приезжают обратно. Спор решается по времени правки."
+                "Связь двусторонняя. Правило одно: побеждает тот, кто правил позже. Удаление — исключение: его отдаёт тот, кто удалил, и оно не отменяется обменом."
             )
             Panel {
                 Field(
@@ -596,6 +596,15 @@ private fun SettingsScreen(db: Db, onBack: () -> Unit) {
                     Spacer(Modifier.height(T.sm))
                     Q("Последний обмен: $lastSync", Type.caption, T.text3)
                 }
+                Spacer(Modifier.height(T.md))
+                Hairline()
+                Spacer(Modifier.height(T.md))
+                Q("Как это работает", Type.caption, T.text3)
+                Spacer(Modifier.height(T.xs))
+                Gesture("Запись", "узнаётся по своему номеру, а не по строке")
+                Gesture("Правка", "остаётся та, что сделана позже")
+                Gesture("Удалил здесь", "строка в таблице сереет и зачёркивается")
+                Gesture("Удалил строку", "запись исчезает и здесь")
             }
 
             // --- копия --------------------------------------------------------
