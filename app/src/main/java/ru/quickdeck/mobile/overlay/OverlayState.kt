@@ -71,6 +71,9 @@ interface OverlayHost {
     /** Настройки — тоже Activity: без них из панели не выйти к обмену и бэкапу. */
     fun openSettings()
 
+    /** Задачи по договору — Activity: их набирают с клавиатуры. */
+    fun openTasks(contractId: String)
+
     fun buzz(ms: Long)
 
     /** Сходить в таблицу молча, не мешая человеку. */

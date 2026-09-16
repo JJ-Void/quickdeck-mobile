@@ -49,6 +49,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Store.init(this)
+        Feel.init(this)
         setContent { AppRoot() }
     }
 
@@ -61,6 +62,7 @@ class MainActivity : ComponentActivity() {
 
 private sealed interface Screen {
     data object Home : Screen
+    data object Settings : Screen
     data class SectionList(val section: Section) : Screen
     data class Card(val section: Section, val id: String) : Screen
     data class Form(val section: Section, val id: String?) : Screen
@@ -94,6 +96,8 @@ private fun AppRoot() {
         Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars)) {
             when (val s = stack.last()) {
                 Screen.Home -> HomeScreen(db) { push(it) }
+
+                Screen.Settings -> SettingsScreen(db) { pop() }
 
                 is Screen.SectionList -> SectionScreen(
                     section = s.section,
@@ -304,8 +308,126 @@ private fun ColumnScope.QuickList(
 
 // --- главный экран -------------------------------------------------------
 
+/**
+ * Домашний экран — то, ради чего приложение открывают без пузыря: посмотреть
+ * положение дел и дойти до нужной записи.
+ *
+ * Настройки отсюда убраны в отдельный экран. Раньше они лежали одной лентой
+ * под разделами: четыре панели подряд, и чтобы добраться до объектов, надо
+ * было пролистать резервное копирование. Настройку трогают раз в месяц,
+ * реестр — каждый день, и порядок должен это отражать.
+ */
 @Composable
 private fun HomeScreen(db: Db, onOpen: (Screen) -> Unit) {
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = T.lg)
+    ) {
+        Spacer(Modifier.height(T.lg))
+        Q("Подряд", Type.title, T.text)
+        Q("Объекты, договоры и люди под большой палец", Type.small, T.text2)
+
+        Spacer(Modifier.height(T.lg))
+        HomeSummary(db)
+
+        Spacer(Modifier.height(T.lg))
+        GroupTitle("Реестр")
+        Section.entries.forEach { s ->
+            NavRow(
+                icon = sectionIcon(s),
+                title = s.title,
+                subtitle = "",
+                trailing = db.count(s).toString()
+            ) { onOpen(Screen.SectionList(s)) }
+            Spacer(Modifier.height(T.sm))
+        }
+
+        Spacer(Modifier.height(T.lg))
+        GroupTitle("Приложение")
+        NavRow(
+            icon = Ic.settings,
+            title = "Настройки",
+            subtitle = "Пузырь, шаблоны сообщений, таблица, резервная копия"
+        ) { onOpen(Screen.Settings) }
+
+        Spacer(Modifier.height(T.xxl))
+    }
+}
+
+/**
+ * Сводка на домашнем экране — те же числа, что и в панели, и считаются они
+ * одним и тем же кодом. Две разные правды об одном договоре — худшее, что
+ * может случиться с учётом.
+ */
+@Composable
+private fun HomeSummary(db: Db) {
+    val s = remember(db) { db.summary() }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(T.rCard))
+            .background(T.surface)
+            .padding(T.lg)
+    ) {
+        Row(Modifier.fillMaxWidth()) {
+            HomeTally("В работе", s.inWork, T.success, Modifier.weight(1f))
+            HomeTally("Просрочено", s.overdue, T.danger, Modifier.weight(1f))
+            HomeTally("Ждёт оплаты", s.awaitingPay, T.warning, Modifier.weight(1f))
+            HomeTally("Потенциально", s.potential, T.info, Modifier.weight(1f))
+        }
+        Spacer(Modifier.height(T.md))
+        Hairline()
+        Spacer(Modifier.height(T.md))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Q("По заключённым договорам", Type.small, T.text2, 1, Modifier.weight(1f))
+            Q(money(s.contracted), Type.amount, T.text, 1)
+        }
+        if (s.rest > 0) {
+            Spacer(Modifier.height(T.xs))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Q("Не получено", Type.small, T.text2, 1, Modifier.weight(1f))
+                Q(money(s.rest), Type.smallNum, T.warning.ink, 1)
+            }
+        }
+        if (s.potentialAmount > 0) {
+            Spacer(Modifier.height(T.xs))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Q("Потенциально, по КП", Type.small, T.text2, 1, Modifier.weight(1f))
+                Q(money(s.potentialAmount), Type.smallNum, T.text3, 1)
+            }
+        }
+        if (s.soon.isNotEmpty()) {
+            Spacer(Modifier.height(T.md))
+            Hairline()
+            Spacer(Modifier.height(T.md))
+            Q("Ближайшие сроки", Type.caption, T.text3)
+            Spacer(Modifier.height(T.xs))
+            s.soon.forEach { (what, when1) ->
+                Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+                    Q(what, Type.small, T.text, 1, Modifier.weight(1f))
+                    Q(when1, Type.smallNum, T.text2, 1)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeTally(label: String, value: Int, tone: T.Tone, modifier: Modifier = Modifier) {
+    Column(modifier) {
+        Q(value.toString(), Type.title, if (value > 0) tone.ink else T.text3, 1)
+        Q(label, Type.caption, T.text3, 1)
+    }
+}
+
+/**
+ * Настройки.
+ *
+ * Разложены по тому, чем человек занят, а не по тому, как устроен код:
+ * «Пузырь», «Сообщения», «Таблица», «Копия». У каждой группы одна строка
+ * пояснения — зачем она вообще, — и дальше только органы управления.
+ */
+@Composable
+private fun SettingsScreen(db: Db, onBack: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -335,6 +457,7 @@ private fun HomeScreen(db: Db, onOpen: (Screen) -> Unit) {
         if (uri == null) return@rememberLauncherForActivityResult
         val result = Backup.write(ctx, uri)
         lastBackup = Store.lastBackup
+        Feel.confirm()
         Toast.makeText(
             ctx,
             result.fold({ "Копия сохранена" }, { "Не вышло: ${it.message}" }),
@@ -347,6 +470,7 @@ private fun HomeScreen(db: Db, onOpen: (Screen) -> Unit) {
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         val result = Backup.read(ctx, uri)
+        Feel.confirm()
         Toast.makeText(
             ctx,
             result.fold({ "Восстановлено записей: $it" }, { "Не вышло: ${it.message}" }),
@@ -360,171 +484,210 @@ private fun HomeScreen(db: Db, onOpen: (Screen) -> Unit) {
         )
     }
 
-    Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = T.lg)
-    ) {
-        Spacer(Modifier.height(T.lg))
-        Q("Подряд", Type.title, T.text)
-        Q("Объекты, договоры и люди под большой палец", Type.small, T.text2)
-        Spacer(Modifier.height(T.xl))
-
-        // --- разделы ------------------------------------------------------
-        Section.entries.forEach { s ->
-            Pressable({ onOpen(Screen.SectionList(s)) }, Modifier.fillMaxWidth()) {
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(T.rCard))
-                        .background(T.surface)
-                        .padding(T.md),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    CardIcon(sectionIcon(s))
-                    Spacer(Modifier.width(T.md))
-                    Q(s.title, Type.heading, T.text, 1, Modifier.weight(1f))
-                    Q(db.count(s).toString(), Type.smallNum, T.text2)
-                    Spacer(Modifier.width(T.sm))
-                    QIcon(Ic.chevronRight, size = 20.dp, tint = T.text3)
-                }
-            }
-            Spacer(Modifier.height(T.md))
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier.fillMaxWidth().padding(start = T.sm, end = T.lg, top = T.sm),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BackButton(onBack)
+            Q("Настройки", Type.title, T.text, 1, Modifier.weight(1f))
         }
 
-        // --- пузырь -------------------------------------------------------
-        Spacer(Modifier.height(T.lg))
-        Q("Пузырь поверх приложений", Type.caption, T.text3)
-        Spacer(Modifier.height(T.sm))
-        Panel {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Q("Быстрый доступ", Type.heading, T.text)
-                    Q(
-                        if (bubbleOn) "Висит поверх всего, таскается пальцем" else "Выключен",
-                        Type.small, T.text2
-                    )
-                }
-                Toggle(bubbleOn) { value ->
-                    if (value && !BubbleService.canDraw(ctx)) { askOverlay(); return@Toggle }
+        Column(
+            Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = T.lg)
+        ) {
+            // --- пузырь -----------------------------------------------------
+            Spacer(Modifier.height(T.lg))
+            GroupTitle("Пузырь поверх приложений")
+            Panel {
+                SwitchRow(
+                    title = "Держать пузырь на экране",
+                    hint = "Реестр открывается поверх любого приложения",
+                    value = bubbleOn
+                ) { value ->
+                    if (value && !BubbleService.canDraw(ctx)) { askOverlay(); return@SwitchRow }
                     bubbleOn = value
                     Store.bubbleEnabled = value
+                    Feel.tick()
                     if (value) {
                         if (Build.VERSION.SDK_INT >= 33) notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                         BubbleService.start(ctx)
                     } else BubbleService.stop(ctx)
                 }
-            }
 
-            if (!granted) {
-                Spacer(Modifier.height(T.md))
-                Q("Нужно разрешение «Поверх других приложений».", Type.small, T.warning.ink)
-                Spacer(Modifier.height(T.sm))
-                GhostButton("Дать разрешение", { askOverlay() }, Modifier.fillMaxWidth())
-            }
-
-            Spacer(Modifier.height(T.lg))
-            Hairline()
-            Spacer(Modifier.height(T.md))
-            Gesture("Тап", "список последнего раздела")
-            Gesture("Потянуть", "колесо разделов")
-            Gesture("Потянуть дальше", "сразу новая запись")
-            Gesture("Долгое нажатие", "пузырь отрывается")
-        }
-
-        // --- сообщения ----------------------------------------------------
-        Spacer(Modifier.height(T.xl))
-        Q("Сообщения сотрудникам", Type.caption, T.text3)
-        Spacer(Modifier.height(T.sm))
-        Panel {
-            Field(
-                "Обращение", greeting, { greeting = it; Store.greeting = it },
-                placeholder = "{Имя}, — или оставь пустым",
-                hint = "Подставляется в начало задачи. Пусто — без обращения."
-            )
-            Spacer(Modifier.height(T.md))
-            GhostButton(
-                "Шаблоны сообщений (${db.templates.size})",
-                { ctx.startActivity(SheetActivity.templates(ctx)) },
-                Modifier.fillMaxWidth()
-            )
-        }
-
-        // --- таблица ------------------------------------------------------
-        Spacer(Modifier.height(T.xl))
-        Q("Google-таблица", Type.caption, T.text3)
-        Spacer(Modifier.height(T.sm))
-        Panel {
-            Q(
-                "Связь двусторонняя: правки из телефона уезжают в таблицу, правки в таблице приезжают обратно. Спор решается по времени правки.",
-                Type.small, T.text2
-            )
-            Spacer(Modifier.height(T.md))
-            Field(
-                "Ссылка веб-приложения Apps Script", url,
-                { url = it; Store.sheetsUrl = it.trim() },
-                placeholder = "https://script.google.com/macros/s/.../exec"
-            )
-            Spacer(Modifier.height(T.md))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Q("Обмениваться самому", Type.small, T.text)
-                    Q("после правки и при открытии пузыря", Type.caption, T.text3)
+                if (!granted) {
+                    Spacer(Modifier.height(T.md))
+                    Q("Нужно разрешение «Поверх других приложений».", Type.small, T.warning.ink)
+                    Spacer(Modifier.height(T.sm))
+                    GhostButton("Дать разрешение", { askOverlay() }, Modifier.fillMaxWidth())
                 }
-                Toggle(auto) { auto = it; Store.autoSync = it }
-            }
-            Spacer(Modifier.height(T.md))
-            PrimaryButton(
-                if (syncing) "Обмениваюсь…" else "Синхронизировать сейчас",
-                onClick = {
-                    if (url.isBlank()) {
-                        Toast.makeText(ctx, "Сначала вставь ссылку", Toast.LENGTH_SHORT).show()
-                        return@PrimaryButton
-                    }
-                    syncing = true
-                    scope.launch {
-                        val result = withContext(Dispatchers.IO) { Sync.run() }
-                        syncing = false
-                        lastSync = Store.lastSync
-                        Toast.makeText(
-                            ctx,
-                            result.fold({ it.text }, { "Не вышло: ${it.message}" }),
-                            Toast.LENGTH_LONG
-                        ).show()
-                    }
-                },
-                enabled = !syncing
-            )
-            if (lastSync.isNotBlank()) {
-                Spacer(Modifier.height(T.sm))
-                Q("Последний обмен: $lastSync", Type.caption, T.text3)
-            }
-        }
 
-        // --- копия --------------------------------------------------------
-        Spacer(Modifier.height(T.xl))
-        Q("Резервная копия", Type.caption, T.text3)
-        Spacer(Modifier.height(T.sm))
-        Panel {
-            Q(
-                "Реестр хранится на телефоне. Копия — единственный способ не потерять его вместе с устройством.",
-                Type.small, T.text2
-            )
-            Spacer(Modifier.height(T.md))
-            PrimaryButton("Создать копию", { saveLauncher.launch(Backup.suggestedName()) })
-            Spacer(Modifier.height(T.sm))
-            GhostButton(
-                "Восстановить из копии",
-                { openLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
-                Modifier.fillMaxWidth()
-            )
-            if (lastBackup.isNotBlank()) {
-                Spacer(Modifier.height(T.sm))
-                Q("Последняя копия: $lastBackup", Type.caption, T.text3)
+                Spacer(Modifier.height(T.md))
+                Hairline()
+                Spacer(Modifier.height(T.md))
+                Q("Что умеет пузырь", Type.caption, T.text3)
+                Spacer(Modifier.height(T.xs))
+                Gesture("Тап", "рабочий стол с реестром")
+                Gesture("Потянуть", "колесо разделов")
+                Gesture("Потянуть дальше", "сразу новая запись")
+                Gesture("Долгое нажатие", "пузырь отрывается и едет за пальцем")
+            }
+
+            // --- сообщения ---------------------------------------------------
+            Spacer(Modifier.height(T.xl))
+            GroupTitle("Сообщения сотрудникам")
+            Panel {
+                Field(
+                    "Обращение", greeting, { greeting = it; Store.greeting = it },
+                    placeholder = "{Имя}, — или оставь пустым",
+                    hint = "Подставляется в начало задачи. Пусто — без обращения."
+                )
             }
             Spacer(Modifier.height(T.sm))
-            GhostButton("Выгрузить CSV", { Export.share(ctx) }, Modifier.fillMaxWidth())
-        }
+            NavRow(
+                icon = Ic.chat,
+                title = "Шаблоны сообщений",
+                subtitle = "Создать новый, изменить или удалить старый",
+                trailing = db.templates.size.toString()
+            ) { ctx.startActivity(SheetActivity.templates(ctx)) }
 
-        Spacer(Modifier.height(T.xxl))
+            // --- таблица ------------------------------------------------------
+            Spacer(Modifier.height(T.xl))
+            GroupTitle(
+                "Google-таблица",
+                "Связь двусторонняя: правки из телефона уезжают в таблицу, правки в таблице приезжают обратно. Спор решается по времени правки."
+            )
+            Panel {
+                Field(
+                    "Ссылка веб-приложения Apps Script", url,
+                    { url = it; Store.sheetsUrl = it.trim() },
+                    placeholder = "https://script.google.com/macros/s/.../exec"
+                )
+                Spacer(Modifier.height(T.md))
+                SwitchRow(
+                    title = "Обмениваться самому",
+                    hint = "После правки и при открытии пузыря",
+                    value = auto
+                ) { auto = it; Store.autoSync = it; Feel.tick() }
+                Spacer(Modifier.height(T.md))
+                PrimaryButton(
+                    if (syncing) "Обмениваюсь…" else "Синхронизировать сейчас",
+                    onClick = {
+                        if (url.isBlank()) {
+                            Toast.makeText(ctx, "Сначала вставь ссылку", Toast.LENGTH_SHORT).show()
+                            return@PrimaryButton
+                        }
+                        syncing = true
+                        scope.launch {
+                            val result = withContext(Dispatchers.IO) { Sync.run() }
+                            syncing = false
+                            lastSync = Store.lastSync
+                            Feel.confirm()
+                            Toast.makeText(
+                                ctx,
+                                result.fold({ it.text }, { "Не вышло: ${it.message}" }),
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    },
+                    enabled = !syncing
+                )
+                if (lastSync.isNotBlank()) {
+                    Spacer(Modifier.height(T.sm))
+                    Q("Последний обмен: $lastSync", Type.caption, T.text3)
+                }
+            }
+
+            // --- копия --------------------------------------------------------
+            Spacer(Modifier.height(T.xl))
+            GroupTitle(
+                "Резервная копия",
+                "Реестр хранится на телефоне. Копия — единственный способ не потерять его вместе с устройством."
+            )
+            Panel {
+                PrimaryButton("Создать копию", { saveLauncher.launch(Backup.suggestedName()) })
+                Spacer(Modifier.height(T.sm))
+                GhostButton(
+                    "Восстановить из копии",
+                    { openLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
+                    Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(T.sm))
+                GhostButton("Выгрузить CSV", { Export.share(ctx) }, Modifier.fillMaxWidth())
+                if (lastBackup.isNotBlank()) {
+                    Spacer(Modifier.height(T.sm))
+                    Q("Последняя копия: $lastBackup", Type.caption, T.text3)
+                }
+            }
+
+            Spacer(Modifier.height(T.xxl))
+        }
+    }
+}
+
+/** Заголовок группы. Одна причина существования группы — одна строка под ним. */
+@Composable
+private fun GroupTitle(title: String, hint: String = "") {
+    Q(title, Type.caption, T.text3)
+    if (hint.isNotBlank()) {
+        Spacer(Modifier.height(T.xs))
+        Q(hint, Type.small, T.text2)
+    }
+    Spacer(Modifier.height(T.sm))
+}
+
+/**
+ * Строка, которая куда-то ведёт. Знак слева, стрелка справа — по ней видно,
+ * что это переход, а не подпись, ещё до того, как прочитан текст.
+ */
+@Composable
+private fun NavRow(
+    icon: String,
+    title: String,
+    subtitle: String,
+    trailing: String = "",
+    onClick: () -> Unit
+) {
+    Pressable(onClick, Modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = 60.dp)
+                .clip(RoundedCornerShape(T.rCard))
+                .background(T.surface)
+                .padding(horizontal = T.md, vertical = T.sm),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            CardIcon(icon)
+            Spacer(Modifier.width(T.md))
+            Column(Modifier.weight(1f)) {
+                Q(title, Type.heading, T.text, 1)
+                if (subtitle.isNotBlank()) Q(subtitle, Type.caption, T.text3, 2)
+            }
+            if (trailing.isNotBlank()) {
+                Spacer(Modifier.width(T.sm))
+                Q(trailing, Type.smallNum, T.text2, 1)
+            }
+            Spacer(Modifier.width(T.sm))
+            QIcon(Ic.chevronRight, size = 20.dp, tint = T.text3)
+        }
+    }
+}
+
+/**
+ * Переключатель с подписью. Подпись всегда описывает включённое состояние:
+ * «Обмениваться самому» — понятно и что будет, если выключить, а
+ * «Не обмениваться самому» в положении «выкл» читается двойным отрицанием.
+ */
+@Composable
+private fun SwitchRow(title: String, hint: String, value: Boolean, onChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Q(title, Type.small, T.text)
+            if (hint.isNotBlank()) Q(hint, Type.caption, T.text3, 2)
+        }
+        Spacer(Modifier.width(T.md))
+        Toggle(value, onChange)
     }
 }
 

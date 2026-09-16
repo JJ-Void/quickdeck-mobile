@@ -197,6 +197,24 @@ data class Payment(
     val empty: Boolean get() = condition.isBlank() && share == 0.0 && !paid
 }
 
+/**
+ * Задача по договору.
+ *
+ * Общего списка тут быть не может: у каждого договора свои цели, сроки и
+ * люди. Поэтому задачи заводятся руками, а не подставляются шаблоном,
+ * который всё равно пришлось бы переписывать под каждый объект.
+ *
+ * Живёт только в телефоне: в таблице такого столбца нет и заводить его
+ * незачем — задача нужна тому, кто держит договор, а не бухгалтерии.
+ */
+@Serializable
+data class ContractTask(
+    val id: String = newId(),
+    val text: String = "",
+    val done: Boolean = false,
+    val createdAt: Long = nowMs()
+)
+
 @Serializable
 data class Contract(
     override val id: String = newId(),
@@ -211,6 +229,7 @@ data class Contract(
     val responsible: String = "",
     val coExecutors: List<String> = emptyList(),
     val payments: List<Payment> = emptyList(),
+    val tasks: List<ContractTask> = emptyList(),   // только в телефоне
     val note: String = "",
     override val updatedAt: Long = 0L,
     override val deleted: Boolean = false,
@@ -221,6 +240,19 @@ data class Contract(
         listOfNotNull(siteName?.takeIf { it.isNotBlank() }, workKind.takeIf { it.isNotBlank() })
             .joinToString(" · ")
             .ifBlank { code.ifBlank { "Без номера" } }
+
+    val openTasks: Int get() = tasks.count { !it.done }
+
+    /**
+     * Договор закончен: либо сдан и оплачен, либо его не будет. Такие не
+     * попадают ни в сводку, ни в работу — они уже история.
+     *
+     * «Приостановлен», «Претензия», «Просрочен» сюда не входят: по ним ещё
+     * предстоит что-то делать, и прятать их было бы враньём.
+     */
+    val archived: Boolean
+        get() = status == Status.REJECTED || status == Status.TERMINATED ||
+            status == Status.PAID_FULL || status == Status.WARRANTY
 
     val paidShare: Double get() = payments.filter { it.paid }.sumOf { it.share }
     val paidAmount: Long get() = (amount * paidShare).toLong()
@@ -368,12 +400,22 @@ data class Db(
  * Слияние двух версий одного списка. Побеждает та запись, которую правили
  * позже. Запись, которой нет у одной из сторон, просто добавляется.
  */
-fun <T : Row> mergeRows(local: List<T>, remote: List<T>): List<T> {
+fun <T : Row> mergeRows(
+    local: List<T>,
+    remote: List<T>,
+    // Поля, которых в таблице нет, победившая удалённая версия обнулила бы.
+    // keep переносит их из местной записи в победившую.
+    keep: (winner: T, mine: T) -> T = { winner, _ -> winner }
+): List<T> {
     val out = LinkedHashMap<String, T>()
     local.forEach { out[it.id] = it }
     remote.forEach { r ->
         val l = out[r.id]
-        out[r.id] = if (l == null || r.updatedAt > l.updatedAt) r else l
+        out[r.id] = when {
+            l == null -> r
+            r.updatedAt > l.updatedAt -> keep(r, l)
+            else -> l
+        }
     }
     return out.values.toList()
 }
@@ -381,8 +423,14 @@ fun <T : Row> mergeRows(local: List<T>, remote: List<T>): List<T> {
 fun mergeDb(local: Db, remote: Db): Db = Db(
     customers = mergeRows(local.customers, remote.customers),
     employees = mergeRows(local.employees, remote.employees),
-    sites = mergeRows(local.sites, remote.sites),
-    contracts = mergeRows(local.contracts, remote.contracts),
+    // Готовность объекта и задачи по договору есть только на телефоне.
+    // Без keep первый же обмен стирал бы их вместе с приехавшей записью.
+    sites = mergeRows(local.sites, remote.sites) { winner, mine ->
+        winner.copy(progress = mine.progress)
+    },
+    contracts = mergeRows(local.contracts, remote.contracts) { winner, mine ->
+        winner.copy(tasks = mine.tasks)
+    },
     handovers = mergeRows(local.handovers, remote.handovers),
     // Шаблоны и справочники живут по своим правилам: шаблоны — только на
     // телефоне, справочники приходят из таблицы целиком.

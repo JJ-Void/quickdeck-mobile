@@ -111,6 +111,45 @@ object Store {
         d.copy(contracts = d.contracts.putContract(c.copy(payments = payments, updatedAt = nowMs())))
     }
 
+    // --- задачи по договору ------------------------------------------------
+    // Задачи живут только в телефоне, но правка договора всё равно метится
+    // временем: иначе таблица решит, что её версия свежее, и перезапишет
+    // то, что человек только что поменял на экране.
+
+    fun addContractTask(contractId: String, text: String) = mutate { d ->
+        val c = d.contracts.firstOrNull { it.id == contractId } ?: return@mutate d
+        val clean = text.trim()
+        if (clean.isEmpty()) return@mutate d
+        val task = ContractTask(text = clean)
+        d.copy(contracts = d.contracts.putContract(c.copy(tasks = c.tasks + task, updatedAt = nowMs())))
+    }
+
+    fun setContractTaskDone(contractId: String, taskId: String, done: Boolean) = mutate { d ->
+        val c = d.contracts.firstOrNull { it.id == contractId } ?: return@mutate d
+        if (c.tasks.none { it.id == taskId }) return@mutate d
+        val tasks = c.tasks.map { if (it.id == taskId) it.copy(done = done) else it }
+        d.copy(contracts = d.contracts.putContract(c.copy(tasks = tasks, updatedAt = nowMs())))
+    }
+
+    fun renameContractTask(contractId: String, taskId: String, text: String) = mutate { d ->
+        val c = d.contracts.firstOrNull { it.id == contractId } ?: return@mutate d
+        val clean = text.trim()
+        if (clean.isEmpty() || c.tasks.none { it.id == taskId }) return@mutate d
+        val tasks = c.tasks.map { if (it.id == taskId) it.copy(text = clean) else it }
+        d.copy(contracts = d.contracts.putContract(c.copy(tasks = tasks, updatedAt = nowMs())))
+    }
+
+    /** Задачу удаляем насовсем: надгробие в таблице ей не нужно, её там нет. */
+    fun deleteContractTask(contractId: String, taskId: String) = mutate { d ->
+        val c = d.contracts.firstOrNull { it.id == contractId } ?: return@mutate d
+        if (c.tasks.none { it.id == taskId }) return@mutate d
+        d.copy(
+            contracts = d.contracts.putContract(
+                c.copy(tasks = c.tasks.filterNot { it.id == taskId }, updatedAt = nowMs())
+            )
+        )
+    }
+
     // --- удаление ---------------------------------------------------------
     // Не вырезаем строку, а ставим надгробие: иначе запись вернётся из таблицы.
 

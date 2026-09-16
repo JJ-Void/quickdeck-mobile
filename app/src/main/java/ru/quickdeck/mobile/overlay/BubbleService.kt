@@ -14,13 +14,11 @@ import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.os.Build
 import androidx.annotation.RequiresApi
+import ru.quickdeck.mobile.core.Feel
 import ru.quickdeck.mobile.core.PANEL_BLUR_DP
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.os.VibrationEffect
-import android.os.Vibrator
-import android.os.VibratorManager
 import android.provider.Settings
 import android.view.Gravity
 import android.view.MotionEvent
@@ -108,6 +106,7 @@ class BubbleService : Service(), OverlayHost {
     override fun onCreate() {
         super.onCreate()
         Store.init(this)
+        Feel.init(this)
         wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -489,6 +488,11 @@ class BubbleService : Service(), OverlayHost {
         runCatching { if (intent != null) startActivity(intent) }
     }
 
+    override fun openTasks(contractId: String) {
+        OverlayState.close()
+        startActivity(SheetActivity.tasks(this, contractId))
+    }
+
     override fun openTask(employeeId: String) {
         // Контекст снимается до close(): панель его забудет, а задача — нет.
         val site = OverlayState.contextSiteId
@@ -498,16 +502,13 @@ class BubbleService : Service(), OverlayHost {
     }
 
     @Suppress("DEPRECATION")
+    /**
+     * Службе досталась своя вибрация ещё до того, как появился общий отклик.
+     * Теперь она просто выбирает удар по длительности — чтобы панель и
+     * экраны приложения били одинаково.
+     */
     override fun buzz(ms: Long) {
-        runCatching {
-            val effect = VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                val manager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
-                manager.defaultVibrator.vibrate(effect)
-            } else {
-                (getSystemService(Context.VIBRATOR_SERVICE) as Vibrator).vibrate(effect)
-            }
-        }
+        if (ms >= 14) Feel.confirm() else Feel.tick()
     }
 
     override fun syncQuietly() {

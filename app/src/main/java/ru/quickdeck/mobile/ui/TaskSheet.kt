@@ -4,6 +4,8 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -20,6 +22,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import ru.quickdeck.mobile.core.Actions
+import ru.quickdeck.mobile.core.Feel
 import ru.quickdeck.mobile.core.Ic
 import ru.quickdeck.mobile.core.Q
 import ru.quickdeck.mobile.core.QIcon
@@ -329,17 +332,15 @@ private fun Notice(tone: T.Tone, title: String, hint: String) {
 @Composable
 fun ColumnScope.TemplatesSheet(db: Db, onClose: () -> Unit) {
     var editing by remember { mutableStateOf<MsgTemplate?>(null) }
+    var armed by remember { mutableStateOf<String?>(null) }
 
     Row(
         Modifier.fillMaxWidth().padding(start = T.lg, end = T.sm, top = T.md),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Q("Шаблоны сообщений", Type.title, T.text, 1, Modifier.weight(1f))
-        Pressable({ editing = MsgTemplate() }) {
-            Box(
-                Modifier.size(T.touchMin).clip(RoundedCornerShape(percent = 50)).background(T.accent.fill),
-                contentAlignment = Alignment.Center
-            ) { QIcon(Ic.plus, size = 20.dp, tint = Color.White, stroke = 2f) }
+        Column(Modifier.weight(1f)) {
+            Q("Шаблоны сообщений", Type.title, T.text, 1)
+            Q("Заготовки задач сотрудникам", Type.small, T.text2, 1)
         }
         Pressable(onClose) {
             Box(Modifier.size(T.touchMin), contentAlignment = Alignment.Center) {
@@ -380,6 +381,7 @@ fun ColumnScope.TemplatesSheet(db: Db, onClose: () -> Unit) {
             Spacer(Modifier.height(T.lg))
             PrimaryButton("Сохранить", {
                 Store.upsertTemplate(draft.copy(title = title.trim(), body = text.trim(), builtin = false))
+                Feel.confirm()
                 editing = null
             }, enabled = title.isNotBlank() && text.isNotBlank())
             Spacer(Modifier.height(T.sm))
@@ -395,6 +397,32 @@ fun ColumnScope.TemplatesSheet(db: Db, onClose: () -> Unit) {
             .padding(horizontal = T.lg)
     ) {
         Spacer(Modifier.height(T.sm))
+
+        // Создание — отдельная строка со словом, а не кружок в углу.
+        // Что шаблоны вообще можно заводить, должно быть видно, а не
+        // угадываться по значку.
+        Pressable({ Feel.tick(); editing = MsgTemplate() }, Modifier.fillMaxWidth()) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = T.touchMin)
+                    .clip(RoundedCornerShape(T.rCard))
+                    .background(T.accent.chip)
+                    .padding(horizontal = T.md),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                QIcon(Ic.plus, size = 18.dp, tint = T.accent.ink, stroke = 2f)
+                Spacer(Modifier.width(T.sm))
+                Q("Новый шаблон", Type.heading, T.accent.ink, 1)
+            }
+        }
+        Spacer(Modifier.height(T.md))
+
+        if (db.templates.isNotEmpty()) {
+            Q("Можно изменить или удалить любой — даже тот, что был с самого начала", Type.caption, T.text3)
+            Spacer(Modifier.height(T.xs))
+        }
+
         db.templates.forEach { t ->
             // Название и текст — разные данные. Одинаковые не дублируем.
             val text = t.body.takeIf { !it.trim().equals(t.title.trim(), true) }.orEmpty()
@@ -405,6 +433,10 @@ fun ColumnScope.TemplatesSheet(db: Db, onClose: () -> Unit) {
                     .clip(RoundedCornerShape(T.rCard))
                     .background(T.surface)
                     .border(1.dp, T.hairline, RoundedCornerShape(T.rCard))
+                    .clickable(
+                        interactionSource = remember(t.id) { MutableInteractionSource() },
+                        indication = null
+                    ) { Feel.tick(); editing = t }
                     .padding(T.md),
                 verticalAlignment = Alignment.Top
             ) {
@@ -430,14 +462,36 @@ fun ColumnScope.TemplatesSheet(db: Db, onClose: () -> Unit) {
                     }
                 }
                 Spacer(Modifier.width(T.sm))
-                Pressable({ editing = t }) {
+                Pressable({ Feel.tick(); editing = t }) {
                     Box(Modifier.size(T.touchMin), contentAlignment = Alignment.Center) {
                         QIcon(Ic.edit, size = 18.dp, tint = T.text2)
                     }
                 }
-                Pressable({ Store.deleteTemplate(t.id) }) {
-                    Box(Modifier.size(T.touchMin), contentAlignment = Alignment.Center) {
-                        QIcon(Ic.trash, size = 18.dp, tint = T.danger.ink)
+                // Первое нажатие спрашивает, второе удаляет: вернуть шаблон
+                // будет неоткуда, а корзина стоит рядом с карандашом.
+                Pressable({
+                    if (armed == t.id) {
+                        Feel.warn()
+                        Store.deleteTemplate(t.id)
+                        armed = null
+                    } else {
+                        Feel.tick()
+                        armed = t.id
+                    }
+                }) {
+                    Box(
+                        Modifier
+                            .size(T.touchMin)
+                            .padding(T.xs)
+                            .clip(RoundedCornerShape(T.rIcon))
+                            .background(if (armed == t.id) T.danger.chip else Color.Transparent),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (armed == t.id) {
+                            Q("Удалить?", Type.caption, T.danger.ink, 1)
+                        } else {
+                            QIcon(Ic.trash, size = 18.dp, tint = T.text2)
+                        }
                     }
                 }
             }

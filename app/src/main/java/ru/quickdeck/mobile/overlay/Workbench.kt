@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -29,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
+import ru.quickdeck.mobile.core.Feel
 import ru.quickdeck.mobile.core.Ic
 import ru.quickdeck.mobile.core.Q
 import ru.quickdeck.mobile.core.QIcon
@@ -39,6 +41,7 @@ import ru.quickdeck.mobile.data.Section
 import ru.quickdeck.mobile.data.Stage
 import ru.quickdeck.mobile.data.Status
 import ru.quickdeck.mobile.data.Store
+import ru.quickdeck.mobile.data.summary
 import ru.quickdeck.mobile.data.money
 import ru.quickdeck.mobile.ui.Pressable
 import ru.quickdeck.mobile.ui.shownStatus
@@ -73,6 +76,7 @@ fun ColumnScope.WorkbenchLayer(db: Db, host: OverlayHost) {
     val group = OverlayState.group
 
     Header(host)
+    SummaryStrip(db)
     Sections(db, section)
     Tools(db, section, group, host)
 
@@ -88,7 +92,10 @@ fun ColumnScope.WorkbenchLayer(db: Db, host: OverlayHost) {
         contentPadding = PaddingValues(bottom = T.lg)
     ) {
         items(rows, key = { it.id }) { row ->
-            EntryLine(row) { OverlayState.openCard(CardRef(section, row.id)) }
+            EntryLine(row) {
+                Feel.tick()
+                OverlayState.openCard(CardRef(section, row.id))
+            }
         }
     }
 }
@@ -118,6 +125,88 @@ private fun Header(host: OverlayHost) {
         }
         Spacer(Modifier.width(T.xs))
         RoundAction(Ic.close, "Закрыть") { OverlayState.close() }
+    }
+}
+
+/**
+ * Сводка — четыре числа и сумма, всегда на виду.
+ *
+ * Раньше сводка была отдельным уровнем, до которого надо было дойти. Но её
+ * смотрят не «когда решил посмотреть», а первым взглядом, ещё не зная, зачем
+ * открыл панель. Поэтому она стоит над разделами и не требует ни одного
+ * нажатия.
+ *
+ * Считается по договорам: объект — это адрес, а работа и деньги живут в
+ * договоре, и на одном адресе их бывает несколько.
+ */
+@Composable
+private fun SummaryStrip(db: Db) {
+    val s = remember(db) { db.summary() }
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = T.lg, vertical = T.xs)
+            .clip(RoundedCornerShape(T.rCard))
+            .background(T.panelCard)
+            .padding(horizontal = T.md, vertical = T.sm)
+    ) {
+        Row(Modifier.fillMaxWidth()) {
+            Tally("В работе", s.inWork, T.accent, Modifier.weight(1f))
+            Tally("Просрочено", s.overdue, T.danger, Modifier.weight(1f))
+            Tally("Ждёт оплаты", s.awaitingPay, T.warning, Modifier.weight(1f))
+            Tally("Потенциально", s.potential, T.info, Modifier.weight(1f))
+        }
+
+        if (s.contracted > 0) {
+            Spacer(Modifier.height(T.sm))
+            Box(Modifier.fillMaxWidth().height(1.dp).background(T.panelEdge.copy(alpha = 0.5f)))
+            Spacer(Modifier.height(T.sm))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Q("По договорам", Type.caption, T.text2OnDark, 1, Modifier.weight(1f))
+                Q(money(s.contracted), Type.amount, T.textOnDark, 1)
+            }
+            if (s.rest > 0) {
+                Spacer(Modifier.height(2.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Q("Не получено", Type.caption, T.text2OnDark, 1, Modifier.weight(1f))
+                    Q(money(s.rest), Type.smallNum, T.warning.fill, 1)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Одно число сводки. Ноль показывается приглушённым, а не прячется: пустое
+ * место на привычной позиции читается как сбой, а «0 просрочено» — как ответ.
+ */
+@Composable
+private fun RowScope.Tally(label: String, value: Int, tone: T.Tone, modifier: Modifier = Modifier) {
+    Column(modifier, horizontalAlignment = Alignment.Start) {
+        Q(
+            value.toString(),
+            Type.title,
+            if (value > 0) tone.fill else T.text2OnDark.copy(alpha = 0.5f),
+            1
+        )
+        Q(label, Type.caption, T.text2OnDark, 1)
+    }
+}
+
+/** Сколько по договору незакрытых задач. Значок, а не строка: место дорого. */
+@Composable
+private fun TaskBadge(count: Int) {
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(percent = 50))
+            .background(T.info.fill.copy(alpha = 0.18f))
+            .padding(horizontal = 6.dp, vertical = 1.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        QIcon(Ic.task, Modifier, 10.dp, T.info.fill, 2.2f)
+        Spacer(Modifier.width(3.dp))
+        Q(count.toString(), Type.caption, T.info.fill, 1)
     }
 }
 
@@ -261,7 +350,9 @@ private data class Entry(
     val status: String,
     val tone: T.Tone,
     val value: String,
-    val warn: Boolean
+    val warn: Boolean,
+    /** Сколько незакрытых задач. 0 — значка нет. */
+    val badge: Int = 0
 )
 
 /**
@@ -297,7 +388,13 @@ private fun EntryLine(e: Entry, onClick: () -> Unit) {
                 }
                 Spacer(Modifier.width(T.md))
                 Column(Modifier.weight(1f)) {
-                    Q(e.title, Type.small, T.textOnDark, 1)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Q(e.title, Type.small, T.textOnDark, 1, Modifier.weight(1f, fill = false))
+                        if (e.badge > 0) {
+                            Spacer(Modifier.width(T.sm))
+                            TaskBadge(e.badge)
+                        }
+                    }
                     if (e.subtitle.isNotBlank()) {
                         Q(e.subtitle, Type.caption, T.text2OnDark, 1)
                     }
@@ -403,7 +500,8 @@ private fun rowsOf(db: Db, section: Section, group: String?): List<Entry> {
                 status = st.stage.short,
                 tone = st.tone(),
                 value = if (c.amount != 0L) money(c.amount) else "",
-                warn = st == Status.OVERDUE
+                warn = st == Status.OVERDUE,
+                badge = c.openTasks
             )
         }
 
@@ -448,8 +546,9 @@ private fun groupOf(db: Db, section: Section, id: String): String? = when (secti
     }
 
     Section.CONTRACTS -> db.contract(id)?.let { c ->
-        val st = shownStatus(c)
-        if (st.stage == Stage.PROBLEM || st == Status.PAID_FULL) "Архив" else st.stage.label
+        // «Приостановлен» и «Претензия» — не архив: по ним ещё работать.
+        // Архив — только то, что закончилось: сдано и оплачено либо отказ.
+        if (c.archived) "Архив" else shownStatus(c).stage.label
     }
 
     Section.STAFF -> db.employee(id)?.department?.ifBlank { "Без отдела" }
@@ -475,8 +574,7 @@ private fun packsOf(db: Db, section: Section): List<Pack> {
 
     val order = when (section) {
         // Стадии идут по ходу работы, архив последним: так же, как в жизни.
-        Section.CONTRACTS -> Stage.entries.filter { it != Stage.PROBLEM }.map { it.label } +
-            listOf("Архив")
+        Section.CONTRACTS -> Stage.entries.map { it.label } + listOf("Архив")
         else -> counts.keys.sorted()
     }
     return order.filter { counts.containsKey(it) }.map { name ->

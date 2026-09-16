@@ -32,6 +32,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
+import ru.quickdeck.mobile.core.Feel
 import ru.quickdeck.mobile.core.Ic
 import ru.quickdeck.mobile.core.Q
 import ru.quickdeck.mobile.core.QIcon
@@ -375,8 +376,65 @@ internal fun ColumnScope.ContractBody(c: Contract, db: Db, host: OverlayHost) {
         Spacer(Modifier.height(T.lg))
         QuickStatus(status) {
             Store.setContractStatus(c.id, it)
-            host.buzz(10)
+            Feel.confirm()
             host.syncQuietly()
+        }
+
+        // Задачи по договору. Общего списка тут не бывает: у каждого
+        // договора свои цели, поэтому строки заводит человек, а не шаблон.
+        Spacer(Modifier.height(T.lg))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Q("Задачи", Type.caption, T.text2OnDark, 1, Modifier.weight(1f))
+            if (c.tasks.isNotEmpty()) {
+                Q("${c.tasks.size - c.openTasks} из ${c.tasks.size}", Type.caption, T.text2OnDark, 1)
+            }
+        }
+        Spacer(Modifier.height(T.sm))
+        c.tasks.forEach { task ->
+            Pressable({
+                Feel.confirm()
+                Store.setContractTaskDone(c.id, task.id, !task.done)
+            }, Modifier.fillMaxWidth()) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = T.touchMin)
+                        .clip(RoundedCornerShape(T.rControl))
+                        .background(T.panelCard)
+                        .padding(horizontal = T.md, vertical = T.sm),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Квадрат с галочкой — знак, который не надо объяснять:
+                    // сразу видно и что это можно нажать, и что уже сделано.
+                    Box(
+                        Modifier
+                            .size(20.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(if (task.done) T.success.fill else Color.Transparent)
+                            .border(
+                                1.5.dp,
+                                if (task.done) T.success.fill else T.hairlineDark,
+                                RoundedCornerShape(6.dp)
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (task.done) QIcon(Ic.check, size = 13.dp, tint = Color.White, stroke = 2.4f)
+                    }
+                    Spacer(Modifier.width(T.md))
+                    Q(
+                        task.text,
+                        Type.small,
+                        if (task.done) T.text2OnDark else T.textOnDark,
+                        3,
+                        Modifier.weight(1f)
+                    )
+                }
+            }
+            Spacer(Modifier.height(T.xs))
+        }
+        DarkPill(Ic.plus, if (c.tasks.isEmpty()) "Первая задача" else "Ещё задача", T.info) {
+            Feel.tick()
+            host.openTasks(c.id)
         }
 
         val pays = c.payments.filterNot { it.empty }
@@ -387,7 +445,7 @@ internal fun ColumnScope.ContractBody(c: Contract, db: Db, host: OverlayHost) {
             pays.forEachIndexed { index, p ->
                 Pressable({
                     Store.setPaymentPaid(c.id, index, !p.paid)
-                    host.buzz(8)
+                    Feel.confirm()
                     host.syncQuietly()
                 }, Modifier.fillMaxWidth()) {
                     Row(

@@ -31,6 +31,7 @@ import androidx.core.view.WindowCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import ru.quickdeck.mobile.core.Feel
 import ru.quickdeck.mobile.core.Ic
 import ru.quickdeck.mobile.core.Q
 import ru.quickdeck.mobile.core.QIcon
@@ -58,6 +59,7 @@ class SheetActivity : ComponentActivity() {
         private const val MODE_SEARCH = "search"
         private const val MODE_TASK = "task"
         private const val MODE_TEMPLATES = "templates"
+        private const val MODE_TASKS = "tasks"
 
         fun form(ctx: Context, section: Section, id: String?): Intent =
             Intent(ctx, SheetActivity::class.java).apply {
@@ -91,6 +93,14 @@ class SheetActivity : ComponentActivity() {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
 
+        /** Задачи по договору: набор с клавиатуры, поэтому обычное окно. */
+        fun tasks(ctx: Context, contractId: String): Intent =
+            Intent(ctx, SheetActivity::class.java).apply {
+                putExtra(EXTRA_MODE, MODE_TASKS)
+                putExtra(EXTRA_ID, contractId)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+
         fun templates(ctx: Context): Intent =
             Intent(ctx, SheetActivity::class.java).apply {
                 putExtra(EXTRA_MODE, MODE_TEMPLATES)
@@ -101,6 +111,7 @@ class SheetActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Store.init(this)
+        Feel.init(this)
         WindowCompat.setDecorFitsSystemWindows(window, false)
 
         val mode = intent.getStringExtra(EXTRA_MODE) ?: MODE_FORM
@@ -172,6 +183,17 @@ private fun SheetRoot(
                 "search" -> SearchStep(db = db, onOpen = { target = it }, onClose = onDone)
 
                 "templates" -> TemplatesSheet(db = db, onClose = onDone)
+
+                "tasks" -> {
+                    val contract = db.contract(id)
+                    if (contract == null) {
+                        Column(Modifier.fillMaxWidth().padding(T.xl)) {
+                            Q("Договор не найден", Type.heading, T.text2)
+                        }
+                    } else {
+                        TasksSheet(contract = contract, db = db, onClose = onDone)
+                    }
+                }
 
                 "task" -> {
                     val who = db.employee(id)

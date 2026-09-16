@@ -56,11 +56,7 @@ fun Progress(percent: Int, modifier: Modifier = Modifier) {
  * Просрочка выставляется сама. Руками её держать невозможно, а забытый срок —
  * главное, что руководитель должен видеть с первого взгляда.
  */
-fun shownStatus(c: Contract): Status {
-    val stage = c.status.stage
-    val watch = stage == Stage.CONTRACT || stage == Stage.PRODUCTION || stage == Stage.ACCEPTANCE
-    return if (c.status.signed && watch && overdueText(c.end) != null) Status.OVERDUE else c.status
-}
+fun shownStatus(c: Contract): Status = shownStatusOf(c)
 
 // --- строки списков -----------------------------------------------------
 
