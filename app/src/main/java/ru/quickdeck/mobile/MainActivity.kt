@@ -78,6 +78,13 @@ private enum class Tab(val title: String, val icon: String) {
     MORE("Ещё", Ic.settings)
 }
 
+/**
+ * Что сейчас на экране. Глубина хранится явно: по ней переход понимает,
+ * ныряем мы или всплываем, и не гадает по внешней переменной, которая
+ * к моменту анимации уже успела измениться.
+ */
+private data class Screen(val tab: Tab, val depth: Int, val layer: Layer)
+
 /** Слой внутри вкладки «Реестр»: чем глубже, тем конкретнее. */
 private sealed interface Layer {
     data object Folders : Layer
@@ -90,10 +97,9 @@ private fun AppRoot() {
     val db by Store.db.collectAsState()
     var tab by remember { mutableStateOf(Tab.SUMMARY) }
     val layers = remember { mutableStateListOf<Layer>(Layer.Folders) }
-    var forward by remember { mutableStateOf(true) }
 
-    fun dive(l: Layer) { forward = true; layers.add(l) }
-    fun surface() { if (layers.size > 1) { forward = false; layers.removeAt(layers.size - 1) } }
+    fun dive(l: Layer) { layers.add(l) }
+    fun surface() { if (layers.size > 1) layers.removeAt(layers.size - 1) }
 
     fun openRecord(section: Section, id: String) {
         tab = Tab.REGISTRY
@@ -126,18 +132,33 @@ private fun AppRoot() {
 
             Box(Modifier.weight(1f)) {
                 AnimatedContent(
-                    targetState = tab to layers.last(),
+                    targetState = Screen(tab, layers.size, layers.last()),
                     transitionSpec = {
-                        val dir = if (forward) 1 else -1
-                        (slideInHorizontally(tween(T.MS_SCREEN, easing = T.curve)) { it / 6 * dir } +
-                            fadeIn(tween(T.MS_STATE))) togetherWith
-                            (slideOutHorizontally(tween(T.MS_EXIT, easing = T.curve)) { -it / 6 * dir } +
-                                fadeOut(tween(T.MS_EXIT)))
+                        // Вкладки — соседи, между ними нет «вперёд» и «назад»:
+                        // любое боковое движение здесь читается как ошибка,
+                        // потому что направление ничем не обосновано.
+                        // Слои — глубина: вниз уезжает влево, вверх вправо.
+                        val deeper = targetState.depth > initialState.depth
+                        val shallower = targetState.depth < initialState.depth
+                        when {
+                            deeper -> (slideInHorizontally(tween(T.MS_SCREEN, easing = T.curve)) { it / 5 } +
+                                fadeIn(tween(T.MS_STATE))) togetherWith
+                                (slideOutHorizontally(tween(T.MS_EXIT, easing = T.curve)) { -it / 6 } +
+                                    fadeOut(tween(T.MS_EXIT)))
+
+                            shallower -> (slideInHorizontally(tween(T.MS_SCREEN, easing = T.curve)) { -it / 5 } +
+                                fadeIn(tween(T.MS_STATE))) togetherWith
+                                (slideOutHorizontally(tween(T.MS_EXIT, easing = T.curve)) { it / 6 } +
+                                    fadeOut(tween(T.MS_EXIT)))
+
+                            else -> fadeIn(tween(T.MS_STATE, easing = T.curve)) togetherWith
+                                fadeOut(tween(T.MS_EXIT, easing = T.curve))
+                        }
                     },
                     label = "screen"
                 ) { state ->
-                    val current = state.first
-                    val layer = state.second
+                    val current = state.tab
+                    val layer = state.layer
                     Column(
                         Modifier
                             .fillMaxSize()
@@ -328,23 +349,28 @@ private fun trendOf(points: List<Float>): String {
  */
 @Composable
 private fun FoldersScreen(db: Db, onOpen: (Section, String) -> Unit) {
-    Hero("Объекты", db.liveSites.size.toString(), sub = "по заказчикам")
-
     val byCustomer = remember(db) {
         db.liveSites.groupBy { db.customer(it.customerId)?.name ?: "Без заказчика" }
             .toList().sortedByDescending { it.second.size }
     }
+
+    Hero("Объекты", db.liveSites.size.toString(), sub = "в ${byCustomer.size} папках")
+
+    if (byCustomer.isEmpty()) {
+        Empty("Папок пока нет", "Заведи объект — он ляжет в папку своего заказчика")
+    }
+
     byCustomer.forEach { (name, sites) ->
         val hot = sites.any { site ->
             db.activeContractsOfSite(site.id).any { shownStatusOf(it) == Status.OVERDUE }
         }
-        FolderRow(name, sites.size, hot) { onOpen(Section.SITES, name) }
+        FolderCard(name, sites.size, hot) { onOpen(Section.SITES, name) }
     }
 
-    GroupLabel("Остальное")
-    FolderRow("Договоры", db.liveContracts.size) { onOpen(Section.CONTRACTS, "") }
-    FolderRow("Сотрудники", db.liveEmployees.size) { onOpen(Section.STAFF, "") }
-    FolderRow("Заказчики", db.liveCustomers.size) { onOpen(Section.CUSTOMERS, "") }
+    GroupLabel("Списки")
+    FolderCard("Договоры", db.liveContracts.size, flat = true) { onOpen(Section.CONTRACTS, "") }
+    FolderCard("Сотрудники", db.liveEmployees.size, flat = true) { onOpen(Section.STAFF, "") }
+    FolderCard("Заказчики", db.liveCustomers.size, flat = true) { onOpen(Section.CUSTOMERS, "") }
 }
 
 // ── реестр: записи ────────────────────────────────────────────────────────
@@ -610,12 +636,21 @@ private fun MoreScreen(db: Db) {
         )
     }
 
+    // Очаг здесь — состояние обмена, а не время: время в прочерк не
+    // превращается, а «—» в 62 пункта выглядит как чёрточка через пол-экрана.
+    val ready = Store.syncConfigured
     Hero(
-        "Обмен",
-        if (lastSync.isBlank()) "—" else lastSync,
-        sub = if (Store.syncConfigured) "последняя синхронизация" else "таблица не подключена"
+        label = "Обмен",
+        value = if (!ready) "нет" else if (lastSync.isBlank()) "готов" else lastSync,
+        sub = when {
+            !ready -> "Таблица не подключена"
+            lastSync.isBlank() -> "Ещё ни разу не обменивались"
+            else -> "Последняя синхронизация"
+        },
+        color = if (ready) T.ink else T.faint
     )
 
+    GroupLabel("Таблица", top = 0.dp)
     SettingRow(
         name = if (syncing) "Обмениваюсь…" else "Синхронизировать",
         hint = "Правки уезжают в таблицу, правки из таблицы приезжают сюда. Побеждает тот, кто правил позже.",
@@ -671,13 +706,14 @@ private fun MoreScreen(db: Db) {
         )
     }
 
-    GroupLabel("Данные")
+    GroupLabel("Шаблоны")
     SettingRow(
         name = "Шаблоны сообщений",
         value = db.templates.size.toString(),
         hint = "Заготовки задач сотрудникам: создать, изменить, удалить.",
         onClick = { ctx.startActivity(SheetActivity.templates(ctx)) }
     )
+    GroupLabel("Копия")
     SettingRow(
         name = "Создать копию",
         hint = "Реестр живёт на телефоне. Копия — единственный способ не потерять его вместе с трубкой.",

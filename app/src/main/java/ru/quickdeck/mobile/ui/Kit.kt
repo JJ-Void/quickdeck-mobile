@@ -252,21 +252,56 @@ fun StatCard(
 }
 
 /**
- * Папка: имя и одна цифра. Ничего больше.
+ * Папка — стопка, а не строка.
  *
- * Плашки «2 в работе · 1 просрочен» отсюда убраны сознательно: они делали
- * все строки одинаково пёстрыми, и папка переставала читаться как папка.
+ * Под верхней карточкой видны края нижних: сколько внутри, читается не
+ * цифрой, а формой, ещё до того как человек прочитал число. Плоский список
+ * одинаковых строк этого не даёт — он и был причиной ощущения «всё в куче».
+ *
+ * У списков без вложенности (договоры, сотрудники) стопки нет: там нечего
+ * показывать краями, и лишний слой был бы враньём.
  */
 @Composable
-fun FolderRow(name: String, count: Int, hot: Boolean = false, onClick: () -> Unit) {
-    Surface(Modifier.padding(bottom = 14.dp).tap(onClick = onClick)) {
-        Row(
+fun FolderCard(
+    name: String,
+    count: Int,
+    hot: Boolean = false,
+    flat: Boolean = false,
+    onClick: () -> Unit
+) {
+    val layers = if (flat) 0 else minOf(count, 2)
+    Box(Modifier.fillMaxWidth().padding(bottom = 14.dp)) {
+        // Края нижних карточек. Рисуются первыми, чтобы уйти под верхнюю.
+        for (i in layers downTo 1) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = (i * 10).dp)
+                    .padding(top = (i * 9).dp)
+                    .height(78.dp)
+                    .shadowSoft(T.rCard)
+                    .clip(RoundedCornerShape(T.rCard))
+                    .background(T.card.copy(alpha = 1f - i * 0.18f))
+            )
+        }
+        Surface(Modifier.tap(onClick = onClick)) {
+            Row(
                 Modifier.fillMaxWidth().padding(T.cardPad),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Q(name, Type.heading, T.ink, 2, Modifier.weight(1f))
+                Column(Modifier.weight(1f)) {
+                    Q(name, Type.heading, T.ink, 2)
+                    if (!flat) {
+                        Spacer(Modifier.height(6.dp))
+                        Q(
+                            if (hot) "есть просроченный" else "всё в сроке",
+                            Type.small, if (hot) T.danger else T.faint, 1
+                        )
+                    }
+                }
                 Spacer(Modifier.width(T.lg))
-            Q(count.toString(), Type.big, if (hot) T.accent else T.faint, 1)
+                Q(count.toString(), Type.big, if (hot) T.danger else T.faint, 1)
+            }
         }
     }
 }

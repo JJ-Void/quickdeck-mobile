@@ -103,6 +103,17 @@ object OverlayState {
         private set
 
     /**
+     * Верхний слой панели — полка папок, а не список.
+     *
+     * Раньше все четыре раздела висели сегментами над списком и спорили за
+     * внимание одновременно. Слой решает это сам собой: сначала «что за
+     * пачка», потом «что внутри». Жест по колесу по-прежнему заводит сразу
+     * внутрь — быстрый доступ этим и держится.
+     */
+    var atFolders by mutableStateOf(true)
+        private set
+
+    /**
      * Выбранный фильтр внутри раздела: стадия для договоров, отдел для
      * сотрудников, заказчик для объектов. Пусто — показываем всё.
      *
@@ -190,9 +201,11 @@ object OverlayState {
         }
     }
 
-    /** Панель открылась списком текущего раздела. */
+    /** Тап по пузырю открывает полку папок — верхний слой, а не список. */
     fun openDeck() {
         card = null
+        atFolders = true
+        group = null
         mode = PanelMode.BROWSE
         host?.panelVisible(true)
         host?.panelBlur(true)
@@ -215,10 +228,26 @@ object OverlayState {
         host?.buzz(4)
     }
 
+    /** Открыть папку раздела: со слоя папок на слой записей. */
+    fun openSection(value: Section) {
+        section = value
+        group = null
+        card = null
+        atFolders = false
+    }
+
+    /** Назад со слоя записей — на полку папок, а не наружу. */
+    fun backToFolders() {
+        atFolders = true
+        group = null
+        card = null
+    }
+
     fun openBrowse(value: Section) {
         section = value
         card = null
         group = null
+        atFolders = false
         mode = PanelMode.BROWSE
         host?.panelVisible(true)
         host?.panelBlur(true)
@@ -236,6 +265,7 @@ object OverlayState {
         if (ref.section != section) group = null
         card = ref
         section = ref.section
+        atFolders = false
         when (ref.section) {
             Section.SITES -> {
                 contextSiteId = ref.id
@@ -262,6 +292,7 @@ object OverlayState {
     fun close() {
         mode = PanelMode.HIDDEN
         card = null
+        atFolders = true
         contextSiteId = null
         contextContractId = null
         group = null

@@ -6,6 +6,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontVariation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.sp
@@ -13,17 +14,29 @@ import androidx.compose.foundation.text.BasicText
 import ru.quickdeck.mobile.R
 
 /**
- * Manrope лежит внутри приложения — вариативный файл по оси wght.
+ * Manrope лежит внутри приложения одним вариативным файлом.
  *
- * Объявлены все веса, которыми пользуется шкала, включая 800: без явной
- * записи система подставляет ближайший и очаг экрана выходит жидким.
+ * У этого файла ось wght идёт от 200 до 800, а ЗНАЧЕНИЕ ПО УМОЛЧАНИЮ — 200.
+ * Если просто объявить Font(файл, W700), система возьмёт файл как есть и
+ * нарисует всё сверхтонким: заголовки, суммы, очаг экрана. Именно поэтому
+ * цифра в 62 пункта выглядела контуром, а не цифрой.
+ *
+ * Поэтому каждому весу явно задаётся положение оси через variationSettings.
+ * Убирать это нельзя — текст мгновенно станет тонким по всему приложению.
  */
+@OptIn(androidx.compose.ui.text.ExperimentalTextApi::class)
+private fun manrope(weight: Int) = Font(
+    R.font.manrope,
+    FontWeight(weight),
+    variationSettings = FontVariation.Settings(FontVariation.weight(weight))
+)
+
 val Manrope = FontFamily(
-    Font(R.font.manrope, FontWeight.W400),
-    Font(R.font.manrope, FontWeight.W500),
-    Font(R.font.manrope, FontWeight.W600),
-    Font(R.font.manrope, FontWeight.W700),
-    Font(R.font.manrope, FontWeight.W800)
+    manrope(400),
+    manrope(500),
+    manrope(600),
+    manrope(700),
+    manrope(800)
 )
 
 /** Шкала приложения. Новый размер заводится только под новую роль. */

@@ -1,7 +1,13 @@
 package ru.quickdeck.mobile.overlay
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
@@ -11,7 +17,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -24,10 +29,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import ru.quickdeck.mobile.core.Feel
@@ -48,149 +57,253 @@ import ru.quickdeck.mobile.ui.shownStatus
 import ru.quickdeck.mobile.ui.tone
 
 /**
- * Рабочий стол — то, чем реестр разбирают, а не то, чем его показывают.
+ * Панель поверх чужих экранов — тёмная ветка той же системы, что и приложение.
  *
- * Прошлая версия листала записи по одной большой карточке вбок. Выглядело
- * это эффектно, а работать мешало: на экран помещалась одна запись вместо
- * десяти, горизонтальный свайп спорил с системным жестом «назад», и чтобы
- * добраться до нужного договора, приходилось пройти три уровня — раздел,
- * пачку, запись.
+ * Читается слоями: полка папок -> записи -> запись. Смысл слоёв в том, чтобы
+ * не вникать в лишнее: сначала «что за пачка», потом «что внутри». Плоский
+ * список с сегментами вверху это убивал — всё четыре раздела спорили за
+ * внимание одновременно, и панель превращалась в таблицу.
  *
- * Здесь всё иначе и проще. Раздел переключается сегментами вверху. Пачки
- * стали фильтрами: не уровень навигации, а один тап, который снимается
- * таким же тапом. Записи идут плотным списком: строка — имя, подпись,
- * статус словом и цветом, главная цифра справа. Открытая запись
- * разворачивается на месте, закрывается кнопкой и системным «назад».
+ * Правила те же, что в DESIGN-SYSTEM.md: один очаг на слой, три элемента в
+ * карточке, 80 % текста приглушено, один акцент. Отличается только грунт:
+ * светлая поверхность поверх карты, видео или галереи не читается.
  *
  * Ни одного жеста поверх системных: только тапы и вертикальная прокрутка.
  */
 @Composable
 fun ColumnScope.WorkbenchLayer(db: Db, host: OverlayHost) {
     val card = OverlayState.card
-    if (card != null) {
-        DetailLayer(db, host, card)
-        return
-    }
-
+    val atFolders = OverlayState.atFolders
     val section = OverlayState.section
-    val group = OverlayState.group
 
-    Header(host)
-    SummaryStrip(db)
-    Sections(db, section)
-    Tools(db, section, group, host)
-
-    val rows = remember(db, section, group) { rowsOf(db, section, group) }
-
-    if (rows.isEmpty()) {
-        Empty()
-        return
+    val depth = if (card != null) 2 else if (atFolders) 0 else 1
+    val key = when {
+        card != null -> "card:${card.section}:${card.id}"
+        atFolders -> "folders"
+        else -> "items:$section"
     }
 
-    LazyColumn(
-        Modifier.weight(1f).fillMaxWidth(),
-        contentPadding = PaddingValues(bottom = T.lg)
-    ) {
-        items(rows, key = { it.id }) { row ->
-            EntryLine(row) {
-                Feel.tick()
-                OverlayState.openCard(CardRef(section, row.id))
-            }
+    Header(host, depth, section, card)
+
+    AnimatedContent(
+        targetState = Step(depth, key),
+        modifier = Modifier.weight(1f).fillMaxWidth(),
+        transitionSpec = {
+            val forward = targetState.depth > initialState.depth
+            val shift = if (forward) 1 else -1
+            (
+                slideInHorizontally(tween(T.MS_SCREEN, easing = T.curve)) { w -> shift * w / 5 } +
+                    fadeIn(tween(T.MS_SCREEN, easing = T.curve))
+                ) togetherWith (
+                slideOutHorizontally(tween(T.MS_EXIT, easing = T.curve)) { w -> -shift * w / 6 } +
+                    fadeOut(tween(T.MS_EXIT))
+                )
+        },
+        label = "layer"
+    ) { st ->
+        when {
+            st.depth == 2 && card != null -> DetailLayer(db, host, card)
+            st.depth == 0 -> FoldersLayer(db)
+            else -> ItemsLayer(db, section, OverlayState.group, host)
         }
     }
 }
+
+/** Куда едет слой, считается из самого перехода, а не из внешней переменной. */
+private data class Step(val depth: Int, val key: String)
 
 // --- шапка ----------------------------------------------------------------
 
 @Composable
-private fun Header(host: OverlayHost) {
+private fun Header(host: OverlayHost, depth: Int, section: Section, card: CardRef?) {
     Row(
-        Modifier.fillMaxWidth().padding(start = T.lg, end = T.sm, top = T.sm, bottom = T.xs),
+        Modifier.fillMaxWidth().padding(start = T.md, end = T.sm, top = T.sm, bottom = T.xs),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        if (depth > 0) {
+            RoundAction(Ic.chevronLeft, "Назад") {
+                Feel.tick()
+                if (depth == 2) OverlayState.backFromCard() else OverlayState.backToFolders()
+            }
+            Spacer(Modifier.width(T.sm))
+        }
         Column(Modifier.weight(1f)) {
-            Q("Реестр", Type.heading, T.textOnDark, 1)
-            val last = Store.lastSync
             Q(
-                if (last.isBlank()) "Обмен не настроен" else "Обновлено $last",
-                Type.caption,
-                T.text2OnDark,
-                1
+                when (depth) {
+                    0 -> "Подряд"
+                    1 -> section.title
+                    else -> card?.section?.one.orEmpty()
+                },
+                Type.heading, T.textOnDark, 1
             )
+            if (depth == 0) {
+                val last = Store.lastSync
+                Q(
+                    if (last.isBlank()) "Обмен не настроен" else "Обновлено $last",
+                    Type.label, T.text2OnDark, 1
+                )
+            }
         }
-        RoundAction(Ic.settings, "Настройки") { host.openSettings() }
-        Spacer(Modifier.width(T.xs))
-        RoundAction(Ic.plus, "Добавить", accent = true) {
-            host.openForm(OverlayState.section, null)
+        if (depth <= 1) {
+            RoundAction(Ic.plus, "Добавить", accent = true) { host.openForm(section, null) }
+            Spacer(Modifier.width(T.xs))
         }
-        Spacer(Modifier.width(T.xs))
         RoundAction(Ic.close, "Закрыть") { OverlayState.close() }
     }
 }
 
+// --- слой 0: полка папок --------------------------------------------------
+
 /**
- * Сводка — четыре числа и сумма, всегда на виду.
- *
- * Раньше сводка была отдельным уровнем, до которого надо было дойти. Но её
- * смотрят не «когда решил посмотреть», а первым взглядом, ещё не зная, зачем
- * открыл панель. Поэтому она стоит над разделами и не требует ни одного
- * нажатия.
- *
- * Считается по договорам: объект — это адрес, а работа и деньги живут в
- * договоре, и на одном адресе их бывает несколько.
+ * Первый слой: один очаг и четыре папки. Сводка здесь не таблица из четырёх
+ * равновеликих чисел — они спорили за внимание и не читались ни одной. Одно
+ * число крупно, остальное строкой под ним.
  */
 @Composable
-private fun SummaryStrip(db: Db) {
+private fun FoldersLayer(db: Db) {
     val s = remember(db) { db.summary() }
+    val hot = remember(db) { hotCounts(db) }
 
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = T.lg, vertical = T.xs)
-            .clip(RoundedCornerShape(T.rCard))
-            .background(T.panelCard)
-            .padding(horizontal = T.md, vertical = T.sm)
+    LazyColumn(
+        Modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(start = T.lg, end = T.lg, bottom = T.lg)
     ) {
-        Row(Modifier.fillMaxWidth()) {
-            Tally("В работе", s.inWork, T.action, Modifier.weight(1f))
-            Tally("Просрочено", s.overdue, T.dangerTone, Modifier.weight(1f))
-            Tally("Ждёт оплаты", s.awaitingPay, T.warning, Modifier.weight(1f))
-            Tally("Потенциально", s.potential, T.info, Modifier.weight(1f))
-        }
-
-        if (s.contracted > 0) {
-            Spacer(Modifier.height(T.sm))
-            Box(Modifier.fillMaxWidth().height(1.dp).background(T.panelEdge.copy(alpha = 0.5f)))
-            Spacer(Modifier.height(T.sm))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Q("По договорам", Type.caption, T.text2OnDark, 1, Modifier.weight(1f))
-                Q(money(s.contracted), Type.amount, T.textOnDark, 1)
+        item {
+            Fade(0) {
+                Column(Modifier.fillMaxWidth().padding(top = T.sm, bottom = T.lg)) {
+                    Q(s.inWork.toString(), Type.big, T.textOnDark, 1)
+                    Spacer(Modifier.height(2.dp))
+                    Q("договоров в работе", Type.small, T.text2OnDark, 1)
+                    Spacer(Modifier.height(T.md))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (s.overdue > 0) {
+                            Q("Просрочено ${s.overdue}", Type.small, T.dangerTone.fill, 1)
+                            Spacer(Modifier.width(T.md))
+                        }
+                        if (s.rest > 0) {
+                            Q("Не получено ${money(s.rest)}", Type.small, T.action.fill, 1)
+                        }
+                    }
+                }
             }
-            if (s.rest > 0) {
-                Spacer(Modifier.height(2.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Q("Не получено", Type.caption, T.text2OnDark, 1, Modifier.weight(1f))
-                    Q(money(s.rest), Type.smallNum, T.warning.fill, 1)
+        }
+        itemsIndexedSections { index, sec ->
+            Fade(index + 1) {
+                PanelFolder(
+                    name = sec.title,
+                    count = db.count(sec),
+                    hot = hot[sec] ?: 0
+                ) {
+                    Feel.tick()
+                    OverlayState.openSection(sec)
                 }
             }
         }
     }
 }
 
+private fun androidx.compose.foundation.lazy.LazyListScope.itemsIndexedSections(
+    content: @Composable (Int, Section) -> Unit
+) {
+    val all = Section.entries
+    items(all.size) { i -> content(i, all[i]) }
+}
+
 /**
- * Одно число сводки. Ноль показывается приглушённым, а не прячется: пустое
- * место на привычной позиции читается как сбой, а «0 просрочено» — как ответ.
+ * Папка — карточка со стопкой под ней. Стопка не украшение: по ней видно,
+ * что внутри лежит ещё слой, и это читается без единого слова.
  */
 @Composable
-private fun RowScope.Tally(label: String, value: Int, tone: T.Tone, modifier: Modifier = Modifier) {
-    Column(modifier, horizontalAlignment = Alignment.Start) {
-        Q(
-            value.toString(),
-            Type.title,
-            if (value > 0) tone.fill else T.text2OnDark.copy(alpha = 0.5f),
-            1
+private fun PanelFolder(name: String, count: Int, hot: Int, onClick: () -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(bottom = T.md)) {
+        Pressable(onClick, Modifier.fillMaxWidth()) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(T.rRow))
+                    .background(T.panelCard)
+                    .padding(horizontal = T.lg, vertical = T.md),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Q(name, Type.heading, T.textOnDark, 1)
+                    Q(
+                        if (hot > 0) "$count · горит $hot" else count.toString(),
+                        Type.label,
+                        if (hot > 0) T.dangerTone.fill else T.text2OnDark,
+                        1
+                    )
+                }
+                QIcon(Ic.chevronRight, Modifier, 18.dp, T.text2OnDark, 1.8f)
+            }
+        }
+        // Края нижних карточек: сужаются и гаснут, как настоящая стопка.
+        Box(
+            Modifier
+                .padding(horizontal = 10.dp)
+                .fillMaxWidth()
+                .height(4.dp)
+                .clip(RoundedCornerShape(bottomStart = T.rIcon, bottomEnd = T.rIcon))
+                .background(T.panelCard.copy(alpha = 0.55f))
         )
-        Q(label, Type.caption, T.text2OnDark, 1)
+        Box(
+            Modifier
+                .padding(horizontal = 20.dp)
+                .fillMaxWidth()
+                .height(3.dp)
+                .clip(RoundedCornerShape(bottomStart = T.rInner, bottomEnd = T.rInner))
+                .background(T.panelCard.copy(alpha = 0.28f))
+        )
+    }
+}
+
+/** Что в разделе горит: просроченные договоры и объекты с ними. */
+private fun hotCounts(db: Db): Map<Section, Int> {
+    val overdue = db.liveContracts.filter { shownStatus(it) == Status.OVERDUE }
+    return mapOf(
+        Section.CONTRACTS to overdue.size,
+        Section.SITES to overdue.mapNotNull { it.siteId }.filter { it.isNotBlank() }.distinct().size,
+        Section.CUSTOMERS to 0,
+        Section.STAFF to 0
+    )
+}
+
+/** Ступень входа: блоки появляются друг за другом, а не все разом. */
+@Composable
+private fun Fade(index: Int, content: @Composable () -> Unit) {
+    var shown by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { shown = true }
+    val a by animateFloatAsState(
+        targetValue = if (shown) 1f else 0f,
+        animationSpec = tween(T.MS_STATE, delayMillis = index * T.MS_STEP, easing = T.curve),
+        label = "step"
+    )
+    Box(Modifier.alpha(a)) { content() }
+}
+
+// --- слой 1: записи раздела ----------------------------------------------
+
+@Composable
+private fun ItemsLayer(db: Db, section: Section, group: String?, host: OverlayHost) {
+    val rows = remember(db, section, group) { rowsOf(db, section, group) }
+
+    Column(Modifier.fillMaxWidth()) {
+        Tools(db, section, group, host)
+        if (rows.isEmpty()) {
+            Empty()
+        } else {
+            LazyColumn(
+                Modifier.fillMaxWidth(),
+                contentPadding = PaddingValues(start = T.lg, end = T.lg, bottom = T.lg)
+            ) {
+                items(rows, key = { it.id }) { row ->
+                    EntryLine(row) {
+                        Feel.tick()
+                        OverlayState.openCard(CardRef(section, row.id))
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -200,62 +313,13 @@ private fun TaskBadge(count: Int) {
     Row(
         Modifier
             .clip(RoundedCornerShape(percent = 50))
-            .background(T.info.fill.copy(alpha = 0.18f))
+            .background(T.panelRaised)
             .padding(horizontal = 6.dp, vertical = 1.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        QIcon(Ic.task, Modifier, 10.dp, T.info.fill, 2.2f)
+        QIcon(Ic.task, Modifier, 10.dp, T.text2OnDark, 2.2f)
         Spacer(Modifier.width(3.dp))
-        Q(count.toString(), Type.caption, T.info.fill, 1)
-    }
-}
-
-/** Разделы — сегменты, а не отдельный экран: переключение в один тап. */
-@Composable
-private fun Sections(db: Db, current: Section) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = T.lg, vertical = T.xs)
-            .clip(RoundedCornerShape(T.rControl))
-            .background(T.panelCard)
-            .padding(3.dp)
-    ) {
-        Section.entries.forEach { s ->
-            val on = s == current
-            val fill by animateFloatAsState(
-                targetValue = if (on) 1f else 0f,
-                animationSpec = tween(T.MS_PRESS, easing = T.curve),
-                label = "seg"
-            )
-            Box(Modifier.weight(1f)) {
-                Pressable({ OverlayState.pickSection(s) }, Modifier.fillMaxWidth()) {
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 44.dp)
-                            .clip(RoundedCornerShape(T.rIcon))
-                            .background(T.panelRaised.copy(alpha = fill))
-                            .padding(vertical = T.xs),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        Q(
-                            db.count(s).toString(),
-                            Type.smallNum,
-                            if (on) T.textOnDark else T.text2OnDark,
-                            1
-                        )
-                        Q(
-                            s.title,
-                            Type.caption,
-                            if (on) T.action.fill else T.text2OnDark,
-                            1
-                        )
-                    }
-                }
-            }
-        }
+        Q(count.toString(), Type.label, T.text2OnDark, 1)
     }
 }
 
@@ -265,11 +329,6 @@ private fun Sections(db: Db, current: Section) {
  * Поле ввода здесь невозможно: окно службы не берёт фокус, иначе перехватит
  * весь экран. Поэтому поиск — кнопка, открывающая обычный экран с
  * клавиатурой, а на месте остаются фильтры.
- *
- * Фильтры стоят вместо прежнего уровня «пачек». Стадии договоров, отделы
- * сотрудников, заказчики объектов — это срезы одного списка, а не шаг
- * вглубь: как фильтр они снимаются одним тапом и не прячут остальное, как
- * уровень — заставляли возвращаться назад ради соседней стадии.
  */
 @Composable
 private fun Tools(db: Db, section: Section, current: String?, host: OverlayHost) {
@@ -278,7 +337,7 @@ private fun Tools(db: Db, section: Section, current: String?, host: OverlayHost)
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(vertical = T.xs)
+            .padding(bottom = T.md)
             .horizontalScroll(rememberScrollState())
             .padding(horizontal = T.lg),
         horizontalArrangement = Arrangement.spacedBy(T.sm),
@@ -287,23 +346,22 @@ private fun Tools(db: Db, section: Section, current: String?, host: OverlayHost)
         Pressable({ host.openSearch() }) {
             Row(
                 Modifier
-                    .heightIn(min = 32.dp)
-                    .clip(RoundedCornerShape(T.rIcon))
+                    .heightIn(min = 34.dp)
+                    .clip(RoundedCornerShape(T.rControl))
                     .background(T.panelCard)
-                    .border(1.dp, T.panelEdge, RoundedCornerShape(T.rIcon))
                     .padding(horizontal = T.md),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 QIcon(Ic.search, Modifier, 14.dp, T.text2OnDark, 2f)
                 Spacer(Modifier.width(T.xs))
-                Q("Найти", Type.caption, T.text2OnDark, 1)
+                Q("Найти", Type.small, T.text2OnDark, 1)
             }
         }
 
         if (packs.size >= 2) {
-            Chip("Все", null, current == null, T.muted) { OverlayState.pickGroup(null) }
+            Chip("Все", null, current == null) { OverlayState.pickGroup(null) }
             packs.forEach { pack ->
-                Chip(pack.name, pack.count, current == pack.name, pack.tone) {
+                Chip(pack.name, pack.count, current == pack.name) {
                     OverlayState.pickGroup(if (current == pack.name) null else pack.name)
                 }
             }
@@ -311,26 +369,27 @@ private fun Tools(db: Db, section: Section, current: String?, host: OverlayHost)
     }
 }
 
+/** Фильтр. Выбранный — акцентом, остальные молчат: акцент на экране один. */
 @Composable
-private fun Chip(label: String, count: Int?, on: Boolean, tone: T.Tone, onClick: () -> Unit) {
+private fun Chip(label: String, count: Int?, on: Boolean, onClick: () -> Unit) {
     Pressable(onClick) {
         Row(
             Modifier
-                .heightIn(min = 32.dp)
-                .clip(RoundedCornerShape(T.rIcon))
-                .background(if (on) tone.fill.copy(alpha = 0.18f) else T.panelCard)
-                .border(
-                    1.dp,
-                    if (on) tone.fill.copy(alpha = 0.6f) else T.panelEdge,
-                    RoundedCornerShape(T.rIcon)
-                )
+                .heightIn(min = 34.dp)
+                .clip(RoundedCornerShape(T.rControl))
+                .background(if (on) T.action.fill else T.panelCard)
                 .padding(horizontal = T.md),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Q(label, Type.caption, if (on) T.textOnDark else T.text2OnDark, 1)
+            Q(label, Type.small, if (on) T.textOnDark else T.text2OnDark, 1)
             if (count != null) {
                 Spacer(Modifier.width(T.xs))
-                Q(count.toString(), Type.caption, if (on) tone.fill else T.text2OnDark, 1)
+                Q(
+                    count.toString(),
+                    Type.label,
+                    if (on) T.textOnDark.copy(alpha = 0.7f) else T.text2OnDark,
+                    1
+                )
             }
         }
     }
@@ -338,10 +397,6 @@ private fun Chip(label: String, count: Int?, on: Boolean, tone: T.Tone, onClick:
 
 // --- строка списка --------------------------------------------------------
 
-/**
- * Что показывает строка. Одинаково для всех разделов, чтобы глаз не
- * переучивался при переключении сегмента.
- */
 private data class Entry(
     val id: String,
     val icon: String,
@@ -351,110 +406,73 @@ private data class Entry(
     val tone: T.Tone,
     val value: String,
     val warn: Boolean,
-    /** Сколько незакрытых задач. 0 — значка нет. */
     val badge: Int = 0
 )
 
 /**
- * Строка реестра.
- *
- * Слева знак и имя, справа главная цифра и статус словом. Слово
- * обязательно: по одному цвету статус не читается ни на солнце, ни при
- * дальтонизме. Высота фиксированная, разделитель тонкий — список
- * сканируется сверху вниз, а не разглядывается по одной карточке.
+ * Запись — карточка, а не строка таблицы: имя, одна подпись, одна цифра.
+ * Стадию называет слово; цвет добавляется только когда горит.
  */
 @Composable
 private fun EntryLine(e: Entry, onClick: () -> Unit) {
     Pressable(onClick, Modifier.fillMaxWidth()) {
-        Column(Modifier.fillMaxWidth()) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 56.dp)
-                    .padding(horizontal = T.lg, vertical = T.sm),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Полоска состояния: цвет дублирует слово справа, а не заменяет.
-                Box(
-                    Modifier
-                        .width(3.dp)
-                        .height(28.dp)
-                        .clip(RoundedCornerShape(2.dp))
-                        .background(e.tone.fill.copy(alpha = if (e.warn) 1f else 0.55f))
-                )
-                Spacer(Modifier.width(T.md))
-                Box(Modifier.size(20.dp), contentAlignment = Alignment.Center) {
-                    QIcon(e.icon, Modifier, 18.dp, T.text2OnDark, 1.6f)
-                }
-                Spacer(Modifier.width(T.md))
-                Column(Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Q(e.title, Type.small, T.textOnDark, 1, Modifier.weight(1f, fill = false))
-                        if (e.badge > 0) {
-                            Spacer(Modifier.width(T.sm))
-                            TaskBadge(e.badge)
-                        }
-                    }
-                    if (e.subtitle.isNotBlank()) {
-                        Q(e.subtitle, Type.caption, T.text2OnDark, 1)
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(bottom = T.sm)
+                .clip(RoundedCornerShape(T.rRow))
+                .background(T.panelCard)
+                .padding(horizontal = T.lg, vertical = T.md),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(Modifier.size(20.dp), contentAlignment = Alignment.Center) {
+                QIcon(e.icon, Modifier, 18.dp, T.text2OnDark, 1.8f)
+            }
+            Spacer(Modifier.width(T.md))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Q(e.title, Type.body, T.textOnDark, 1, Modifier.weight(1f, fill = false))
+                    if (e.badge > 0) {
+                        Spacer(Modifier.width(T.sm))
+                        TaskBadge(e.badge)
                     }
                 }
-                Spacer(Modifier.width(T.sm))
-                Column(horizontalAlignment = Alignment.End) {
-                    if (e.value.isNotBlank()) {
-                        Q(e.value, Type.smallNum, T.textOnDark, 1)
-                    }
-                    if (e.status.isNotBlank()) {
-                        Q(
-                            e.status,
-                            Type.caption,
-                            if (e.warn) T.dangerTone.fill else T.text2OnDark,
-                            1
-                        )
-                    }
+                val under = listOf(e.subtitle, e.status).filter { it.isNotBlank() }.joinToString(" · ")
+                if (under.isNotBlank()) {
+                    Q(under, Type.label, if (e.warn) T.dangerTone.fill else T.text2OnDark, 1)
                 }
             }
-            Box(Modifier.fillMaxWidth().height(1.dp).background(T.panelEdge.copy(alpha = 0.4f)))
+            if (e.value.isNotBlank()) {
+                Spacer(Modifier.width(T.sm))
+                Q(e.value, Type.amount, T.textOnDark, 1)
+            }
         }
     }
 }
 
 @Composable
-private fun ColumnScope.Empty() {
+private fun Empty() {
     Column(
-        Modifier.weight(1f).fillMaxWidth().padding(T.xl),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+        Modifier.fillMaxWidth().padding(T.xl),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Q("Здесь пока пусто", Type.small, T.textOnDark)
+        Q("Здесь пока пусто", Type.body, T.textOnDark)
         Spacer(Modifier.height(T.xs))
-        Q("Заведи первую запись — она появится тут", Type.caption, T.text2OnDark)
+        Q("Заведи первую запись — она появится тут", Type.small, T.text2OnDark)
     }
 }
 
 // --- деталь ---------------------------------------------------------------
 
-/**
- * Открытая запись занимает панель целиком: детали, действия, связи.
- * Возврат — кнопка слева и системное «назад», без жестов поверх содержимого.
- */
 @Composable
-private fun ColumnScope.DetailLayer(db: Db, host: OverlayHost, ref: CardRef) {
-    Row(
-        Modifier.fillMaxWidth().padding(start = T.sm, end = T.sm, top = T.sm),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        RoundAction(Ic.chevronLeft, "Назад") { OverlayState.backFromCard() }
-        Spacer(Modifier.width(T.xs))
-        Q(ref.section.one, Type.caption, T.text2OnDark, 1, Modifier.weight(1f))
-        RoundAction(Ic.close, "Закрыть") { OverlayState.close() }
-    }
-
-    when (ref.section) {
-        Section.SITES -> db.site(ref.id)?.let { SiteBody(it, db, host) } ?: Gone()
-        Section.CONTRACTS -> db.contract(ref.id)?.let { ContractBody(it, db, host) } ?: Gone()
-        Section.CUSTOMERS -> db.customer(ref.id)?.let { PartyBody(it, db, host) } ?: Gone()
-        Section.STAFF -> db.employee(ref.id)?.let { StaffBody(it, db, host) } ?: Gone()
+private fun DetailLayer(db: Db, host: OverlayHost, ref: CardRef) {
+    Column(Modifier.fillMaxWidth()) {
+        when (ref.section) {
+            Section.SITES -> db.site(ref.id)?.let { SiteBody(it, db, host) } ?: Gone()
+            Section.CONTRACTS -> db.contract(ref.id)?.let { ContractBody(it, db, host) } ?: Gone()
+            Section.CUSTOMERS -> db.customer(ref.id)?.let { PartyBody(it, db, host) } ?: Gone()
+            Section.STAFF -> db.employee(ref.id)?.let { StaffBody(it, db, host) } ?: Gone()
+        }
     }
 }
 
@@ -464,15 +482,14 @@ private fun Gone() {
         Modifier.fillMaxWidth().padding(T.xl),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Q("Запись не найдена", Type.small, T.textOnDark)
+        Q("Запись не найдена", Type.body, T.textOnDark)
         Spacer(Modifier.height(T.xs))
-        Q("Возможно, её удалили в таблице", Type.caption, T.text2OnDark)
+        Q("Возможно, её удалили в таблице", Type.small, T.text2OnDark)
     }
 }
 
 // --- данные ---------------------------------------------------------------
 
-/** Срез списка: раздел и фильтр. Считается один раз на изменение. */
 private fun rowsOf(db: Db, section: Section, group: String?): List<Entry> {
     val all = when (section) {
         Section.SITES -> db.liveSites.map { s ->
@@ -534,20 +551,15 @@ private fun rowsOf(db: Db, section: Section, group: String?): List<Entry> {
     }
 
     val byGroup = if (group == null) all else all.filter { groupOf(db, section, it.id) == group }
-    // Порядок: сначала то, что горит, потом остальное по алфавиту. Список,
-    // который каждый раз лежит иначе, читать невозможно.
     return byGroup.sortedWith(compareByDescending<Entry> { it.warn }.thenBy { it.title.lowercase() })
 }
 
-/** Пачка записи — тот же признак, по которому строятся фильтры. */
 private fun groupOf(db: Db, section: Section, id: String): String? = when (section) {
     Section.SITES -> db.site(id)?.let { s ->
         db.customer(s.customerId)?.name ?: "Без заказчика"
     }
 
     Section.CONTRACTS -> db.contract(id)?.let { c ->
-        // «Приостановлен» и «Претензия» — не архив: по ним ещё работать.
-        // Архив — только то, что закончилось: сдано и оплачено либо отказ.
         if (c.archived) "Архив" else shownStatus(c).stage.label
     }
 
@@ -555,9 +567,8 @@ private fun groupOf(db: Db, section: Section, id: String): String? = when (secti
     Section.CUSTOMERS -> null
 }
 
-private data class Pack(val name: String, val count: Int, val tone: T.Tone)
+private data class Pack(val name: String, val count: Int)
 
-/** Фильтры раздела в том порядке, в котором по ним ходят. */
 private fun packsOf(db: Db, section: Section): List<Pack> {
     val ids = when (section) {
         Section.SITES -> db.liveSites.map { it.id }
@@ -573,16 +584,10 @@ private fun packsOf(db: Db, section: Section): List<Pack> {
     if (counts.isEmpty()) return emptyList()
 
     val order = when (section) {
-        // Стадии идут по ходу работы, архив последним: так же, как в жизни.
         Section.CONTRACTS -> Stage.entries.map { it.label } + listOf("Архив")
         else -> counts.keys.sorted()
     }
     return order.filter { counts.containsKey(it) }.map { name ->
-        Pack(
-            name = name,
-            count = counts[name] ?: 0,
-            tone = if (name == "Архив") T.muted
-            else Stage.entries.firstOrNull { it.label == name }?.tone() ?: T.muted
-        )
+        Pack(name = name, count = counts[name] ?: 0)
     }
 }
