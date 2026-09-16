@@ -227,25 +227,6 @@ object Store {
         set(v) { if (::prefs.isInitialized) prefs.edit().putString("lastSync", v).apply() }
 
     val syncConfigured: Boolean get() = sheetsUrl.isNotBlank()
-
-    // --- фоновая работа ---------------------------------------------------
-
-    /**
-     * Идёт ли обмен прямо сейчас. Флаг живёт в памяти, а не в настройках:
-     * после перезапуска «идёт обмен» не имеет смысла.
-     */
-    @Volatile
-    var isSyncing: Boolean = false
-
-    /** Утренняя сводка уведомлением. Выключается одним переключателем. */
-    var digestEnabled: Boolean
-        get() = flag("digest", true)
-        set(v) { if (::prefs.isInitialized) prefs.edit().putBoolean("digest", v).apply() }
-
-    /** День, за который сводку уже присылали: чтобы не повторяться. */
-    var lastDigestDay: String
-        get() = str("lastDigestDay", "")
-        set(v) { if (::prefs.isInitialized) prefs.edit().putString("lastDigestDay", v).apply() }
 }
 
 // Замена по идентификатору, добавление в конец. Порядок держим стабильным:

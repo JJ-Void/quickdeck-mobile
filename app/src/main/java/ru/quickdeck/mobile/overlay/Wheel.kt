@@ -2,7 +2,6 @@ package ru.quickdeck.mobile.overlay
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -16,10 +15,8 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -29,13 +26,11 @@ import ru.quickdeck.mobile.core.QIcon
 import ru.quickdeck.mobile.core.T
 import ru.quickdeck.mobile.core.Type
 import kotlin.math.abs
-import kotlin.math.atan2
-import kotlin.math.cos
-import kotlin.math.hypot
+import kotlin.math.pow
 import kotlin.math.roundToInt
-import kotlin.math.sin
+import kotlin.math.sign
 
-/** Один луч веера. Лучей всегда четыре — это разделы реестра. */
+/** Один пункт колеса. Пунктов всегда четыре — это разделы реестра. */
 data class WheelItem(
     val title: String,
     val subtitle: String,
@@ -44,71 +39,73 @@ data class WheelItem(
 )
 
 /**
- * Геометрия веера.
- *
- * Выбор идёт по углу, а не по вертикали: палец выходит из нити и ведёт по
- * дуге, как стрелка прибора. Рука так двигается естественнее — запястье
- * само описывает дугу, — и то же движение потом продолжается в колоде,
- * которая листается вбок. Один язык на весь интерфейс.
+ * Геометрия колеса в пикселях. Шаг сетки 4 сохраняется:
+ * 64 = 16 x 4, 56 = 14 x 4, 192 = 48 x 4.
  */
 class WheelGeometry(densityPx: Float) {
-    /** Ближе этого — палец ещё «на нити», выбор не начался. */
-    val deadZone = 44f * densityPx
+    /** Расстояние между пунктами по вертикали на экране. */
+    val pitch = 64f * densityPx
 
-    /** Радиус, на котором стоят лучи. */
-    val radius = 128f * densityPx
+    /**
+     * Сколько нужно провести пальцем, чтобы лента прокрутилась на пункт.
+     * Меньше видимого шага: колесо крутится легче, чем едет глазами.
+     */
+    val dragPitch = 48f * densityPx
 
-    /** Дальше — режим «создать»: рука ушла за пределы веера. */
-    val createPull = 224f * densityPx
+    /** Палец почти не ушёл от пузыря — это отмена. */
+    val cancelPull = 56f * densityPx
 
-    val cardWidth = 168f * densityPx
-    val cardHeight = 52f * densityPx
+    /** Дальше этого — режим «добавить». */
+    val createPull = 192f * densityPx
 
-    /** Сектор одного луча по углу, в радианах. */
-    val sector = (Math.PI / 4.4).toFloat()
+    /** Просвет между пузырём и лентой. */
+    val gap = 16f * densityPx
 
+    val cardWidth = 240f * densityPx
+    val cardHeight = 56f * densityPx
+
+    /** Дальше этого расстояния от центра пункт не рисуется. */
+    val visibleSpan = 2.6f
+
+    /** Сколько нельзя занимать сверху и снизу: статусная строка и навигация. */
     val safeTop = 96f * densityPx
     val safeBottom = 120f * densityPx
 
     /**
-     * Центр веера. Хочется поставить его туда, где палец коснулся нити,
-     * но у края экрана верхний и нижний лучи вылезли бы за границу —
-     * поэтому центр отодвигается внутрь ровно настолько, чтобы веер влез.
+     * Центр колеса — та строка, в которой стоит выбранный пункт.
+     *
+     * Хочется поставить её туда, где палец лёг на пузырь. Но у края экрана
+     * соседние пункты вылезли бы за границу, поэтому центр отодвигается
+     * внутрь ровно настолько, чтобы сосед сверху и снизу были видны целиком.
      */
     fun centerFor(originY: Float, screenHeight: Float): Float {
-        val margin = radius * 0.86f
+        val margin = pitch + cardHeight / 2f
         val top = safeTop + margin
         val bottom = screenHeight - safeBottom - margin
-        return if (bottom <= top) screenHeight / 2f else originY.coerceIn(top, bottom)
-    }
-
-    /** Угол луча: веер раскрывается от края к центру экрана. */
-    fun angleOf(index: Int, count: Int, fromRight: Boolean): Float {
-        val span = sector * (count - 1)
-        val start = -span / 2f
-        val a = start + sector * index
-        return if (fromRight) (Math.PI.toFloat() - a) else a
+        return if (bottom <= top) (screenHeight / 2f) else originY.coerceIn(top, bottom)
     }
 }
 
 /**
- * Прилипание к лучу: возле центра сектора кривая почти плоская, поэтому
- * луч «держится», а не дрожит между соседями, когда рука подрагивает.
+ * Прилипание к центральной позиции.
+ *
+ * Возле целого значения кривая почти плоская — пункт «держится» в центре,
+ * и палец должен пройти заметный кусок, чтобы лента перескочила на
+ * следующий. Это то же ощущение защёлки, что даёт snapFlingBehavior при
+ * прокрутке, только здесь оно работает прямо во время ведения пальцем.
  */
 fun detent(virtual: Float): Float {
     val base = kotlin.math.round(virtual)
     val d = virtual - base
-    return base + kotlin.math.sign(d) * (abs(d) * 2f).pow17() / 2f
+    return base + sign(d) * (abs(d) * 2f).pow(1.7f) / 2f
 }
 
-private fun Float.pow17(): Float = Math.pow(this.toDouble(), 1.7).toFloat()
-
 /**
- * Где палец — такой и выбор.
+ * Чистая функция: где палец — такой и выбор.
  *
- * Угол между пальцем и центром веера выбирает луч, расстояние — намерение:
- * не отходя от нити, человек ничего не выбирает; на радиусе веера —
- * открывает раздел; вытянув руку дальше — заводит новую запись.
+ * По вертикали палец крутит ленту: выбранный пункт всегда стоит в центре,
+ * едет лента, а не выделение. По горизонтали — насколько человек вытянул:
+ * чуть-чуть значит передумал, нормально — открыть, далеко — новая запись.
  */
 fun selectionFor(
     itemCount: Int,
@@ -119,27 +116,22 @@ fun selectionFor(
 ): Pair<Float, WheelMode> {
     if (itemCount == 0) return 0f to WheelMode.CANCEL
 
-    val fromRight = OverlayState.fromRight
-    val dx = (finger.x - originX) * (if (fromRight) -1f else 1f)
-    val dy = finger.y - centerY
-    val reach = hypot(dx.toDouble(), dy.toDouble()).toFloat()
+    val virtual = ((finger.y - centerY) / g.dragPitch)
+        .coerceIn(0f, (itemCount - 1).toFloat())
 
-    val angle = atan2(dy, dx.coerceAtLeast(1f))
-    val span = g.sector * (itemCount - 1)
-    val virtual = ((angle + span / 2f) / g.sector).coerceIn(0f, (itemCount - 1).toFloat())
-
+    val pull = abs(finger.x - originX)
     val mode = when {
-        reach < g.deadZone -> WheelMode.CANCEL
-        reach < g.createPull -> WheelMode.BROWSE
+        pull < g.cancelPull -> WheelMode.CANCEL
+        pull < g.createPull -> WheelMode.BROWSE
         else -> WheelMode.CREATE
     }
     return virtual to mode
 }
 
 /**
- * Веер: лучи расходятся дугой от точки касания, выбранный — ярче и ближе
- * к пальцу. Между центром и выбранным лучом натянута светящаяся нить:
- * видно, чем именно управляет рука.
+ * Колесо: выбранный пункт в центре, соседи выше и ниже, лента едет за
+ * пальцем. Чем дальше пункт от центра, тем он мельче и прозрачнее —
+ * центр читается сразу, без подписи «выбрано».
  */
 @Composable
 fun Wheel(
@@ -156,112 +148,92 @@ fun Wheel(
     val g = remember(density) { WheelGeometry(density) }
     val shown = detent(virtual)
     val selected = virtual.roundToInt().coerceIn(0, (items.size - 1).coerceAtLeast(0))
-    val active = mode != WheelMode.CANCEL
+    val xPx = if (fromRight) originX - g.gap - g.cardWidth else originX + g.gap
 
     Box(modifier.fillMaxSize()) {
-        Rays(items.size, shown, g, centerY, originX, fromRight, active, mode)
+        Lens(
+            widthPx = g.cardWidth,
+            heightPx = g.cardHeight,
+            xPx = xPx,
+            centerY = centerY,
+            active = mode != WheelMode.CANCEL,
+            creating = mode == WheelMode.CREATE
+        )
 
         items.forEachIndexed { index, item ->
-            val angle = g.angleOf(index, items.size, fromRight)
-            val away = abs(index - shown)
-            if (away > 2.4f) return@forEachIndexed
+            val away = index - shown
+            val dist = abs(away)
+            if (dist > g.visibleSpan) return@forEachIndexed
 
-            // Выбранный луч подаётся вперёд — как будто тянется к пальцу.
-            val lift = (1f - (away / 1.6f)).coerceIn(0f, 1f)
-            val r = g.radius + 18f * density * lift
-            val cx = originX + cos(angle.toDouble()).toFloat() * r
-            val cy = centerY + sin(angle.toDouble()).toFloat() * r
+            val edge = (dist / g.visibleSpan).coerceIn(0f, 1f)
+            val scale = 1f - 0.16f * edge
+            val fade = (1f - edge).pow(1.4f).coerceIn(0f, 1f)
+            val yPx = centerY - g.cardHeight / 2f + away * g.pitch
 
             WheelCard(
                 item = item,
-                selected = index == selected && active,
+                selected = index == selected && mode != WheelMode.CANCEL,
                 creating = index == selected && mode == WheelMode.CREATE,
                 armed = createArmed,
                 widthPx = g.cardWidth,
                 heightPx = g.cardHeight,
-                fromRight = fromRight,
                 modifier = Modifier
-                    .offset {
-                        IntOffset(
-                            (cx - if (fromRight) g.cardWidth else 0f).roundToInt(),
-                            (cy - g.cardHeight / 2f).roundToInt()
-                        )
-                    }
-                    .scale(0.9f + 0.1f * lift)
-                    .alpha((0.3f + 0.7f * lift).coerceIn(0f, 1f))
+                    .offset { IntOffset(xPx.roundToInt(), yPx.roundToInt()) }
+                    .scale(scale)
+                    .alpha(0.18f + 0.82f * fade)
             )
         }
     }
 }
 
 /**
- * Лучи и натянутая нить.
- *
- * Дуги показывают, куда можно вести палец, яркая линия — куда он ведёт
- * сейчас. Без этого веер превращается в набор карточек, висящих в воздухе.
+ * Неподвижная рамка в центре: она показывает, куда встанет выбор, ещё до
+ * того, как человек начал крутить. Без неё центр приходится угадывать.
  */
 @Composable
-private fun Rays(
-    count: Int,
-    shown: Float,
-    g: WheelGeometry,
+private fun Lens(
+    widthPx: Float,
+    heightPx: Float,
+    xPx: Float,
     centerY: Float,
-    originX: Float,
-    fromRight: Boolean,
     active: Boolean,
-    mode: WheelMode
+    creating: Boolean
 ) {
+    val density = LocalDensity.current
+    val width = with(density) { (widthPx + 12f * density.density).toDp() }
+    val height = with(density) { (heightPx + 10f * density.density).toDp() }
     val glow by animateFloatAsState(
-        targetValue = if (active) 1f else 0.35f,
+        targetValue = if (active) 1f else 0f,
         animationSpec = tween(T.MS_PRESS, easing = T.curve),
-        label = "rays"
+        label = "lens"
     )
-    val tone = if (mode == WheelMode.CREATE) T.glow else T.beam
+    val tint = if (creating) T.accent.fill else Color.White
 
-    Canvas(Modifier.fillMaxSize()) {
-        val c = Offset(originX, centerY)
-
-        // Тонкая дуга-направляющая, по которой стоят лучи.
-        val span = Math.toDegrees((g.sector * (count - 1)).toDouble()).toFloat()
-        val startDeg = if (fromRight) 180f - span / 2f else -span / 2f
-        drawArc(
-            color = T.textOnDark.copy(alpha = 0.10f * glow),
-            startAngle = if (fromRight) startDeg - span / 2f else startDeg,
-            sweepAngle = span,
-            useCenter = false,
-            topLeft = Offset(c.x - g.radius, c.y - g.radius),
-            size = Size(g.radius * 2, g.radius * 2),
-            style = Stroke(width = 1.dp.toPx())
-        )
-
-        // Нить от центра к выбранному лучу.
-        val angle = g.angleOf(shown.roundToInt().coerceIn(0, count - 1), count, fromRight)
-        val target = Offset(
-            c.x + cos(angle.toDouble()).toFloat() * g.radius,
-            c.y + sin(angle.toDouble()).toFloat() * g.radius
-        )
-        drawLine(
-            brush = Brush.linearGradient(
-                listOf(tone.copy(alpha = 0.06f * glow), tone.copy(alpha = 0.75f * glow)),
-                start = c,
-                end = target
-            ),
-            start = c,
-            end = target,
-            strokeWidth = 2.dp.toPx()
-        )
-
-        // Ореол в точке касания: рука держит источник света.
-        drawCircle(
-            brush = Brush.radialGradient(
-                listOf(tone.copy(alpha = 0.22f * glow), Color.Transparent),
-                center = c,
-                radius = 54.dp.toPx()
-            ),
-            radius = 54.dp.toPx(),
-            center = c
-        )
-    }
+    Box(
+        Modifier
+            .offset {
+                IntOffset(
+                    (xPx - 6f * density.density).roundToInt(),
+                    (centerY - heightPx / 2f - 5f * density.density).roundToInt()
+                )
+            }
+            .width(width)
+            .height(height)
+            .clip(RoundedCornerShape(T.rCard))
+            .background(
+                Brush.horizontalGradient(
+                    listOf(
+                        tint.copy(alpha = 0.10f * glow),
+                        tint.copy(alpha = 0.03f * glow)
+                    )
+                )
+            )
+            .border(
+                width = 1.dp,
+                color = tint.copy(alpha = 0.10f + 0.26f * glow),
+                shape = RoundedCornerShape(T.rCard)
+            )
+    )
 }
 
 @Composable
@@ -272,7 +244,6 @@ private fun WheelCard(
     armed: Boolean,
     widthPx: Float,
     heightPx: Float,
-    fromRight: Boolean,
     modifier: Modifier = Modifier
 ) {
     val density = LocalDensity.current
@@ -291,59 +262,59 @@ private fun WheelCard(
     )
 
     val fill = when {
-        creating -> T.action.chip
+        creating -> T.accent.fill
         selected -> T.panelRaised
         else -> T.panelCard
     }
-    val ink = if (creating) T.action.ink else T.textOnDark
-    val sub = if (creating) T.action.ink.copy(alpha = 0.76f) else T.text2OnDark
+    val ink = if (creating) Color.White else T.textOnDark
+    val sub = if (creating) Color.White.copy(alpha = 0.82f) else T.text2OnDark
 
     Row(
         modifier
             .width(width)
             .height(height)
-            .scale(1f + 0.03f * lift + 0.02f * grow)
-            .clip(RoundedCornerShape(T.rControl))
+            .scale(1f + 0.04f * lift + 0.02f * grow)
+            .clip(RoundedCornerShape(T.rCard))
             .background(fill)
             .border(
                 width = if (selected) 1.5.dp else 1.dp,
                 color = when {
-                    creating -> T.glow.copy(alpha = 0.5f)
-                    selected -> T.beam.copy(alpha = 0.18f + 0.5f * lift)
-                    else -> T.panelEdge
+                    creating -> Color.White.copy(alpha = 0.34f)
+                    selected -> T.accent.fill.copy(alpha = 0.22f + 0.6f * lift)
+                    else -> T.hairlineDark
                 },
-                shape = RoundedCornerShape(T.rControl)
+                shape = RoundedCornerShape(T.rCard)
             )
             .padding(horizontal = T.md),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
             Modifier
-                .size(30.dp)
+                .size(36.dp)
                 .clip(RoundedCornerShape(T.rIcon))
                 .background(
                     when {
-                        creating -> T.glowSoft
-                        selected -> T.beamSoft
-                        else -> T.hairlineDark
+                        creating -> Color.White.copy(alpha = 0.2f)
+                        selected -> T.accent.fill.copy(alpha = 0.18f)
+                        else -> Color.White.copy(alpha = 0.06f)
                     }
                 ),
             contentAlignment = Alignment.Center
         ) {
             QIcon(
                 if (creating) Ic.plus else item.icon,
-                size = 17.dp,
+                size = 20.dp,
                 tint = when {
-                    creating -> T.glow
-                    selected -> T.beam
+                    creating -> Color.White
+                    selected -> T.accent.fill
                     else -> T.text2OnDark
                 },
                 stroke = if (selected || creating) 2f else 1.75f
             )
         }
-        Spacer(Modifier.width(T.sm))
+        Spacer(Modifier.width(T.md))
         Column(Modifier.weight(1f)) {
-            Q(if (creating) item.addLabel else item.title, Type.small, ink, 1)
+            Q(if (creating) item.addLabel else item.title, Type.heading, ink, 1)
             Q(item.subtitle, Type.caption, sub, 1)
         }
     }

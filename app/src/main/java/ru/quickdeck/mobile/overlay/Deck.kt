@@ -1,12 +1,6 @@
 package ru.quickdeck.mobile.overlay
 
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.foundation.Canvas
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -35,12 +29,7 @@ import ru.quickdeck.mobile.core.Q
 import ru.quickdeck.mobile.core.QIcon
 import ru.quickdeck.mobile.core.T
 import ru.quickdeck.mobile.core.Type
-import androidx.compose.ui.geometry.Offset
 import ru.quickdeck.mobile.data.Db
-import ru.quickdeck.mobile.data.Store
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import ru.quickdeck.mobile.data.Section
 import ru.quickdeck.mobile.data.Stage
 import ru.quickdeck.mobile.data.Status
@@ -73,7 +62,6 @@ private const val CARD_HEIGHT_FRACTION = 0.62f
 fun ColumnScope.DeckLayer(db: Db, host: OverlayHost) {
     val level = OverlayState.deck
 
-    StatusBar(db)
     DeckHeader(db, host)
 
     when (level) {
@@ -85,61 +73,6 @@ fun ColumnScope.DeckLayer(db: Db, host: OverlayHost) {
     }
 
     DeckHint(level)
-}
-
-
-/**
- * Строка состояния — то, что отличает терминал от списка.
- *
- * Слева видно, на связи ли система и когда последний раз говорила с
- * таблицей, справа — время и объём реестра. Человек открывает панель и
- * сразу знает, свежие ли перед ним данные, ещё не прочитав ни одной
- * карточки.
- */
-@Composable
-private fun StatusBar(db: Db) {
-    val syncing = OverlayState.syncing
-    val pulse = rememberInfiniteTransition(label = "status")
-    val beat by pulse.animateFloat(
-        initialValue = 0.35f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1500, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "beat"
-    )
-    val clock = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
-    val now = remember(OverlayState.mode) { clock.format(Date()) }
-    val last = Store.lastSync.ifBlank { "нет связи" }
-
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = T.lg, vertical = T.xs),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            Modifier
-                .size(6.dp)
-                .clip(RoundedCornerShape(percent = 50))
-                .background((if (syncing) T.beam else T.success.fill).copy(alpha = beat))
-        )
-        Spacer(Modifier.width(T.sm))
-        Q(
-            if (syncing) "ОБМЕН" else "ПОДРЯД · " + last,
-            Type.caption,
-            T.text2OnDark,
-            1,
-            Modifier.weight(1f)
-        )
-        Q(
-            "${db.liveSites.size}/${db.liveContracts.size}/${db.liveEmployees.size}",
-            Type.caption,
-            T.text2OnDark,
-            1
-        )
-        Spacer(Modifier.width(T.sm))
-        Q(now, Type.caption, T.textOnDark, 1)
-    }
 }
 
 /** Путь и действия. Путь показывает уровень словами, а не только видом. */
@@ -314,37 +247,6 @@ private fun centerOffset(state: LazyListState, index: Int): Float {
     return (itemCenter - viewportCenter) / step
 }
 
-/**
- * Угловые маркеры: четыре коротких штриха по углам активной карточки.
- *
- * Приборный приём — рамка прицела. Он говорит «вот это сейчас под
- * управлением» тише, чем заливка, и не спорит с содержимым.
- */
-@Composable
-private fun Corners(active: Boolean) {
-    val glow by animateFloatAsState(
-        targetValue = if (active) 1f else 0f,
-        animationSpec = tween(T.MS_STATE, easing = T.curve),
-        label = "corners"
-    )
-    if (glow <= 0.01f) return
-    Canvas(Modifier.fillMaxSize().padding(T.sm)) {
-        val len = 14.dp.toPx()
-        val w = 1.6.dp.toPx()
-        val c = T.glow.copy(alpha = 0.8f * glow)
-        val pts = listOf(
-            Offset(0f, 0f) to listOf(Offset(len, 0f), Offset(0f, len)),
-            Offset(size.width, 0f) to listOf(Offset(size.width - len, 0f), Offset(size.width, len)),
-            Offset(0f, size.height) to listOf(Offset(len, size.height), Offset(0f, size.height - len)),
-            Offset(size.width, size.height) to
-                listOf(Offset(size.width - len, size.height), Offset(size.width, size.height - len))
-        )
-        pts.forEach { (from, ends) ->
-            ends.forEach { to -> drawLine(c, from, to, strokeWidth = w) }
-        }
-    }
-}
-
 /** Подложка карточки. Стеклянная, с заметной кромкой у центральной. */
 @Composable
 private fun DeckCard(focused: Boolean, onClick: () -> Unit) {
@@ -370,7 +272,6 @@ private fun DeckCard(focused: Boolean, onClick: () -> Unit) {
         ) {
             Pressable(onClick, Modifier.fillMaxSize()) { Box(Modifier.fillMaxSize()) }
         }
-        Corners(focused)
     }
 }
 
