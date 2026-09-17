@@ -123,8 +123,8 @@ private fun AppRoot() {
                 title = when (tab) {
                     Tab.REGISTRY -> when (layers.last()) {
                         is Layer.Folders -> "Реестр"
-                        is Layer.Items -> "Объекты"
-                        is Layer.Record -> "Запись"
+                        is Layer.Items -> (layers.last() as Layer.Items).section.title
+                        is Layer.Record -> (layers.last() as Layer.Record).section.one
                     }
                     else -> tab.title
                 }
@@ -138,8 +138,9 @@ private fun AppRoot() {
                         // любое боковое движение здесь читается как ошибка,
                         // потому что направление ничем не обосновано.
                         // Слои — глубина: вниз уезжает влево, вверх вправо.
-                        val deeper = targetState.depth > initialState.depth
-                        val shallower = targetState.depth < initialState.depth
+                        val sameTab = targetState.tab == initialState.tab
+                        val deeper = sameTab && targetState.depth > initialState.depth
+                        val shallower = sameTab && targetState.depth < initialState.depth
                         when {
                             deeper -> (slideInHorizontally(tween(T.MS_SCREEN, easing = T.curve)) { it / 5 } +
                                 fadeIn(tween(T.MS_STATE))) togetherWith
@@ -150,6 +151,17 @@ private fun AppRoot() {
                                 fadeIn(tween(T.MS_STATE))) togetherWith
                                 (slideOutHorizontally(tween(T.MS_EXIT, easing = T.curve)) { it / 6 } +
                                     fadeOut(tween(T.MS_EXIT)))
+
+                            // Смена вкладки: экран едет туда же, куда палец
+                            // сдвинулся по нижней строке. Вкладка правее —
+                            // новый экран приходит справа, левее — слева.
+                            targetState.tab != initialState.tab -> {
+                                val dir = if (targetState.tab.ordinal > initialState.tab.ordinal) 1 else -1
+                                (slideInHorizontally(tween(T.MS_SCREEN, easing = T.curve)) { dir * it / 8 } +
+                                    fadeIn(tween(T.MS_STATE, easing = T.curve))) togetherWith
+                                    (slideOutHorizontally(tween(T.MS_EXIT, easing = T.curve)) { -dir * it / 10 } +
+                                        fadeOut(tween(T.MS_EXIT, easing = T.curve)))
+                            }
 
                             else -> fadeIn(tween(T.MS_STATE, easing = T.curve)) togetherWith
                                 fadeOut(tween(T.MS_EXIT, easing = T.curve))
@@ -650,134 +662,191 @@ private fun MoreScreen(db: Db) {
         color = if (ready) T.ink else T.faint
     )
 
-    GroupLabel("Таблица", top = 0.dp)
-    SettingRow(
-        name = if (syncing) "Обмениваюсь…" else "Синхронизировать",
-        hint = "Правки уезжают в таблицу, правки из таблицы приезжают сюда. Побеждает тот, кто правил позже.",
-        onClick = {
-            if (!Store.syncConfigured) {
-                Toast.makeText(ctx, "Сначала вставь ссылку на таблицу", Toast.LENGTH_SHORT).show()
-                return@SettingRow
-            }
-            if (syncing) return@SettingRow
-            syncing = true
-            scope.launch {
-                val r = withContext(Dispatchers.IO) { Sync.run() }
-                syncing = false
-                lastSync = Store.lastSync
-                Feel.confirm()
-                Toast.makeText(ctx, r.fold({ it.text }, { "Не вышло: ${it.message}" }), Toast.LENGTH_LONG).show()
-            }
-        }
-    )
-    SettingRow(
-        name = "Обмениваться самому",
-        hint = "После каждой правки и при открытии пузыря.",
-        toggle = auto
-    ) { auto = !auto; Store.autoSync = auto; Feel.tick() }
-    SettingRow(
-        name = "Таблица",
-        value = if (Store.syncConfigured) "подключена" else "не задана",
-        hint = "Адрес веб-приложения Apps Script. Меняется раз в жизни.",
-        onClick = { ctx.startActivity(SheetActivity.sheetUrl(ctx)) }
-    )
-
-    GroupLabel("Пузырь")
-    SettingRow(
-        name = "Поверх приложений",
-        hint = "Реестр открывается поверх любого приложения в один тап.",
-        toggle = bubbleOn
-    ) {
-        if (!bubbleOn && !BubbleService.canDraw(ctx)) { askOverlay(); return@SettingRow }
-        bubbleOn = !bubbleOn
-        Store.bubbleEnabled = bubbleOn
-        Feel.tick()
-        if (bubbleOn) {
-            if (Build.VERSION.SDK_INT >= 33) notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            BubbleService.start(ctx)
-        } else BubbleService.stop(ctx)
-    }
-    if (!granted) {
+    SettingsGroup("Синхронизация", top = 0.dp) {
         SettingRow(
-            name = "Дать разрешение",
-            value = "нужно",
-            hint = "Android требует разрешение «Поверх других приложений».",
-            onClick = { askOverlay() }
+            icon = Ic.sync,
+            tint = T.accent,
+            name = if (syncing) "Обмениваюсь…" else "Синхронизировать",
+            hint = "Правки уезжают в таблицу, правки из таблицы приезжают сюда. Побеждает тот, кто правил позже.",
+            onClick = {
+                if (!Store.syncConfigured) {
+                    Toast.makeText(ctx, "Сначала вставь ссылку на таблицу", Toast.LENGTH_SHORT).show()
+                    return@SettingRow
+                }
+                if (syncing) return@SettingRow
+                syncing = true
+                scope.launch {
+                    val r = withContext(Dispatchers.IO) { Sync.run() }
+                    syncing = false
+                    lastSync = Store.lastSync
+                    Feel.confirm()
+                    Toast.makeText(ctx, r.fold({ it.text }, { "Не вышло: ${it.message}" }), Toast.LENGTH_LONG).show()
+                }
+            }
+        )
+        SettingRow(
+            icon = Ic.clock,
+            name = "Автообмен",
+            hint = "Обмениваться самому: после каждой правки и при открытии пузыря.",
+            toggle = auto
+        ) { auto = !auto; Store.autoSync = auto; Feel.tick() }
+        SettingRow(
+            icon = Ic.database,
+            name = "Таблица",
+            value = if (Store.syncConfigured) "подключена" else "не задана",
+            hint = "Адрес веб-приложения Apps Script. Меняется раз в жизни.",
+            last = true,
+            onClick = { ctx.startActivity(SheetActivity.sheetUrl(ctx)) }
         )
     }
 
-    GroupLabel("Шаблоны")
-    SettingRow(
-        name = "Шаблоны сообщений",
-        value = db.templates.size.toString(),
-        hint = "Заготовки задач сотрудникам: создать, изменить, удалить.",
-        onClick = { ctx.startActivity(SheetActivity.templates(ctx)) }
-    )
-    GroupLabel("Копия")
-    SettingRow(
-        name = "Создать копию",
-        hint = "Реестр живёт на телефоне. Копия — единственный способ не потерять его вместе с трубкой.",
-        onClick = { saveLauncher.launch(Backup.suggestedName()) }
-    )
-    SettingRow(
-        name = "Восстановить из копии",
-        value = lastBackup.ifBlank { "" },
-        hint = "Заменит весь реестр содержимым файла.",
-        onClick = { openLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) }
-    )
-    SettingRow(
-        name = "Выгрузить CSV",
-        hint = "Отдаёт реестр таблицей — для почты или Excel.",
-        onClick = { Export.share(ctx) }
+    SettingsGroup("Пузырь") {
+        SettingRow(
+            icon = Ic.layers,
+            tint = T.accent,
+            name = "Поверх приложений",
+            hint = "Реестр открывается поверх любого приложения в один тап.",
+            toggle = bubbleOn,
+            last = granted
+        ) {
+            if (!bubbleOn && !BubbleService.canDraw(ctx)) { askOverlay(); return@SettingRow }
+            bubbleOn = !bubbleOn
+            Store.bubbleEnabled = bubbleOn
+            Feel.tick()
+            if (bubbleOn) {
+                if (Build.VERSION.SDK_INT >= 33) notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                BubbleService.start(ctx)
+            } else BubbleService.stop(ctx)
+        }
+        if (!granted) {
+            SettingRow(
+                icon = Ic.alert,
+                tint = T.danger,
+                name = "Разрешение",
+                value = "нужно",
+                hint = "Android требует разрешение «Поверх других приложений».",
+                last = true,
+                onClick = { askOverlay() }
+            )
+        }
+    }
+
+    SettingsGroup("Данные") {
+        SettingRow(
+            icon = Ic.save,
+            name = "Создать копию",
+            hint = "Реестр живёт на телефоне. Копия — единственный способ не потерять его вместе с трубкой.",
+            onClick = { saveLauncher.launch(Backup.suggestedName()) }
+        )
+        SettingRow(
+            icon = Ic.archive,
+            name = "Восстановить",
+            value = lastBackup.ifBlank { "" },
+            hint = "Заменит весь реестр содержимым файла копии.",
+            onClick = { openLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) }
+        )
+        SettingRow(
+            icon = Ic.share,
+            name = "Выгрузить CSV",
+            hint = "Отдаёт реестр таблицей — для почты или Excel.",
+            last = true,
+            onClick = { Export.share(ctx) }
+        )
+    }
+
+    SettingsGroup("Сообщения") {
+        SettingRow(
+            icon = Ic.chat,
+            name = "Шаблоны",
+            value = db.templates.size.toString(),
+            hint = "Заготовки задач сотрудникам: создать, изменить, удалить.",
+            last = true,
+            onClick = { ctx.startActivity(SheetActivity.templates(ctx)) }
+        )
+    }
+
+    Spacer(Modifier.height(T.lg))
+    Q(
+        "Подряд ${ru.quickdeck.mobile.BuildConfig.VERSION_NAME}",
+        Type.label, T.faint, 1,
+        Modifier.fillMaxWidth().padding(start = T.xs)
     )
 }
 
 /**
- * Строка настройки: название, значение или переключатель.
+ * Группа настроек: короткое имя и один пузырь со строками внутри.
+ * Связанное лежит вместе — глаз читает группу как один предмет, а не
+ * девять отдельных карточек.
+ */
+@Composable
+private fun SettingsGroup(title: String, top: androidx.compose.ui.unit.Dp = 28.dp, content: @Composable ColumnScope.() -> Unit) {
+    GroupLabel(title, top = top)
+    Surface(Modifier.fillMaxWidth(), radius = T.rCard, content = content)
+}
+
+/**
+ * Строка настройки: знак, название, значение или переключатель.
  *
  * Подсказка живёт под долгим нажатием, а не под кнопкой: объяснение доступно
  * тому, кому оно нужно, и не мешает тому, кто и так знает.
  */
 @Composable
 private fun SettingRow(
+    icon: String,
     name: String,
     hint: String,
+    tint: Color = T.mut,
     value: String = "",
     toggle: Boolean? = null,
+    last: Boolean = false,
     onClick: () -> Unit = {}
 ) {
     var tip by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth()) {
-        if (tip) {
-            Surface(
-                Modifier.padding(bottom = T.sm),
-                radius = 18.dp,
-                fill = T.ink
-            ) {
-                Q(hint, Type.small, Color(0xFFEDF1F2), 5, Modifier.padding(horizontal = 16.dp, vertical = 14.dp))
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .longPressable(
+                    onClick = { tip = false; onClick() },
+                    onLong = { tip = !tip; Feel.confirm() }
+                )
+                .padding(start = 16.dp, end = 20.dp, top = 12.dp, bottom = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                Modifier
+                    .size(36.dp)
+                    .clip(RoundedCornerShape(11.dp))
+                    .background(tint.copy(alpha = if (tint == T.mut) 0.08f else 0.12f)),
+                contentAlignment = Alignment.Center
+            ) { QIcon(icon, size = 19.dp, tint = if (tint == T.mut) T.ink.copy(alpha = 0.7f) else tint) }
+            Spacer(Modifier.width(14.dp))
+            Q(name, Type.body, T.ink, 1, Modifier.weight(1f))
+            Spacer(Modifier.width(T.md))
+            when {
+                toggle != null -> Switch(toggle)
+                value.isNotBlank() -> {
+                    Q(value, Type.small, T.faint, 1)
+                    Spacer(Modifier.width(6.dp))
+                    QIcon(Ic.chevronRight, size = 16.dp, tint = T.faint)
+                }
+                else -> QIcon(Ic.chevronRight, size = 16.dp, tint = T.faint)
             }
         }
-        Surface(
-            Modifier
-                .padding(bottom = T.gap)
-                .longPressable(
-                    onClick = { if (toggle != null) { onClick(); tip = false } else onClick() },
-                    onLong = { tip = !tip; Feel.confirm() }
-                ),
-            radius = T.rRow
-        ) {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = T.cardPad, vertical = 20.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Q(name, Type.body, T.ink, 2, Modifier.weight(1f))
-                Spacer(Modifier.width(T.md))
-                when {
-                    toggle != null -> Switch(toggle)
-                    value.isNotBlank() -> Q(value, Type.small, T.faint, 1)
-                    else -> QIcon(Ic.chevronRight, size = 18.dp, tint = T.faint)
-                }
-            }
+        androidx.compose.animation.AnimatedVisibility(visible = tip) {
+            Q(
+                hint, Type.small, T.mut, 4,
+                Modifier.padding(start = 66.dp, end = 20.dp, bottom = 12.dp)
+            )
+        }
+        if (!last) {
+            Box(
+                Modifier
+                    .padding(start = 66.dp)
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(T.hairline)
+            )
         }
     }
 }

@@ -12,6 +12,9 @@ import kotlin.math.roundToInt
 /** Ссылка на запись — раздел плюс идентификатор, больше ничего не нужно. */
 data class CardRef(val section: Section, val id: String)
 
+/** Слой колоды. Чем глубже, тем конкретнее. */
+enum class DeckLevel { SHELF, PACKS, ITEMS, CARD }
+
 /** Что сейчас на экране поверх всего. */
 enum class PanelMode {
     /** Виден только пузырь. Окно панели не принимает касания вообще. */
@@ -103,26 +106,21 @@ object OverlayState {
         private set
 
     /**
-     * Верхний слой панели — полка папок, а не список.
+     * Слой колоды: полка -> пачки -> записи -> запись.
      *
-     * Раньше все четыре раздела висели сегментами над списком и спорили за
-     * внимание одновременно. Слой решает это сам собой: сначала «что за
-     * пачка», потом «что внутри». Жест по колесу по-прежнему заводит сразу
-     * внутрь — быстрый доступ этим и держится.
+     * Карточки лежат слоями, чтобы не вникать в лишнее: сначала «что за
+     * пачка», потом «что внутри». Плоский список с сегментами вверху это
+     * убивал — все четыре раздела спорили за внимание одновременно.
      */
-    var atFolders by mutableStateOf(true)
+    var level by mutableStateOf(DeckLevel.SHELF)
         private set
 
-    /**
-     * Выбранный фильтр внутри раздела: стадия для договоров, отдел для
-     * сотрудников, заказчик для объектов. Пусто — показываем всё.
-     *
-     * Это именно фильтр, а не уровень навигации: он снимается тем же тапом,
-     * которым поставлен, и не заставляет возвращаться назад ради соседней
-     * стадии.
-     */
+    /** Выбранная пачка: стадия договоров, отдел, заказчик. null — весь раздел. */
     var group by mutableStateOf<String?>(null)
         private set
+
+    /** Какая карточка стояла в центре на каждом слое — чтобы назад вернуться туда же. */
+    val focus = HashMap<String, String>()
 
     /** Откуда пришли: объект и договор последней открытой карточки. */
     var contextSiteId: String? = null
@@ -201,57 +199,39 @@ object OverlayState {
         }
     }
 
-    /** Тап по пузырю открывает полку папок — верхний слой, а не список. */
+    /** Тап по пузырю открывает полку — верхний слой колоды. */
     fun openDeck() {
         card = null
-        atFolders = true
+        level = DeckLevel.SHELF
         group = null
-        mode = PanelMode.BROWSE
-        host?.panelVisible(true)
-        host?.panelBlur(true)
-        host?.panelTouchable(true)
+        showPanel()
     }
 
-    /** Смена раздела сегментом: фильтр и открытая запись к нему не относятся. */
-    fun pickSection(value: Section) {
-        if (section == value) return
+    /** Открыть раздел с полки: сначала пачки, если их больше одной. */
+    fun openSection(value: Section) {
+        if (section != value) focus.remove("items")
         section = value
         group = null
         card = null
+        level = DeckLevel.PACKS
         host?.buzz(6)
     }
 
-    /** Поставить или снять фильтр. null — показать весь раздел. */
-    fun pickGroup(value: String?) {
-        if (group == value) return
+    /** Открыть пачку: слой записей только этой пачки. */
+    fun openGroup(value: String?) {
         group = value
-        host?.buzz(4)
-    }
-
-    /** Открыть папку раздела: со слоя папок на слой записей. */
-    fun openSection(value: Section) {
-        section = value
-        group = null
         card = null
-        atFolders = false
+        level = DeckLevel.ITEMS
+        host?.buzz(6)
     }
 
-    /** Назад со слоя записей — на полку папок, а не наружу. */
-    fun backToFolders() {
-        atFolders = true
-        group = null
-        card = null
-    }
-
+    /** Колесо заводит сразу в раздел, минуя полку. */
     fun openBrowse(value: Section) {
         section = value
         card = null
         group = null
-        atFolders = false
-        mode = PanelMode.BROWSE
-        host?.panelVisible(true)
-        host?.panelBlur(true)
-        host?.panelTouchable(true)
+        level = DeckLevel.PACKS
+        showPanel()
     }
 
     /**
@@ -260,12 +240,11 @@ object OverlayState {
      */
     fun openCard(ref: CardRef) {
         // Переход из чужого раздела — например, из карточки объекта прямо в
-        // договор. Фильтр там свой, старый не подходит: снимаем его, иначе
-        // после возврата список окажется пустым.
+        // договор. Пачка там своя, старая не подходит.
         if (ref.section != section) group = null
         card = ref
         section = ref.section
-        atFolders = false
+        level = DeckLevel.CARD
         when (ref.section) {
             Section.SITES -> {
                 contextSiteId = ref.id
@@ -274,25 +253,54 @@ object OverlayState {
             Section.CONTRACTS -> contextContractId = ref.id
             else -> Unit          // заказчик и сотрудник объект не задают
         }
-        mode = PanelMode.CARD
+        showPanel()
+    }
+
+    /** Листание в раскрытом виде: соседняя запись становится текущей. */
+    fun focusCard(ref: CardRef) {
+        if (level != DeckLevel.CARD || card == ref) return
+        card = ref
+        if (ref.section == Section.SITES) contextSiteId = ref.id
+        if (ref.section == Section.CONTRACTS) contextContractId = ref.id
+    }
+
+    /**
+     * Шаг назад по слоям. hasPacks — есть ли у раздела слой пачек:
+     * если пачка одна, её не показываем и назад идём сразу на полку.
+     */
+    fun back(hasPacks: Boolean) {
+        when (level) {
+            DeckLevel.CARD -> {
+                card?.let { focus["items"] = it.id }
+                card = null
+                level = DeckLevel.ITEMS
+            }
+            DeckLevel.ITEMS -> {
+                level = if (hasPacks && group != null) DeckLevel.PACKS else DeckLevel.SHELF
+                group = null
+            }
+            DeckLevel.PACKS -> level = DeckLevel.SHELF
+            DeckLevel.SHELF -> close()
+        }
+    }
+
+    /** Совместимость со старым вызовом: назад из карточки — к записям. */
+    fun backFromCard() = back(hasPacks = true)
+
+    /** Тап по пузырю: колода с верхнего слоя. */
+    fun openLast() = openDeck()
+
+    private fun showPanel() {
+        mode = PanelMode.BROWSE
         host?.panelVisible(true)
         host?.panelBlur(true)
         host?.panelTouchable(true)
     }
 
-    /** Назад из карточки — в список раздела, а не наружу. */
-    fun backFromCard() {
-        card = null
-        mode = PanelMode.BROWSE
-    }
-
-    /** Тап по пузырю: рабочий стол с тем разделом, где остановились. */
-    fun openLast() = openDeck()
-
     fun close() {
         mode = PanelMode.HIDDEN
         card = null
-        atFolders = true
+        level = DeckLevel.SHELF
         contextSiteId = null
         contextContractId = null
         group = null

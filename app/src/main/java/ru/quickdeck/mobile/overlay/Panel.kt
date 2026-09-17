@@ -110,10 +110,8 @@ fun PanelRoot(host: OverlayHost) {
 
         when (mode) {
             PanelMode.WHEEL -> WheelLayer(db)
-            // Реестр живёт плотным списком: раздел сегментом, срез фильтром,
-            // запись — на месте. Колода листалась вбок и спорила с системным
-            // жестом «назад», а на экран помещала одну запись вместо десяти.
-            PanelMode.BROWSE, PanelMode.CARD -> DeckFrame { WorkbenchLayer(db, host) }
+            // Реестр — колода карточек слоями: полка, пачки, записи, запись.
+            PanelMode.BROWSE, PanelMode.CARD -> DeckFrame { DeckLayer(db, host) }
             PanelMode.HIDDEN -> Unit
         }
     }
